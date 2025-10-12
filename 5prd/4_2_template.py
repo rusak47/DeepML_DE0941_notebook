@@ -33,8 +33,10 @@ class Dataset:
             self.X, self.Y, self.labels = pickle.load(fp)
 
         self.X = np.array(self.X).astype(np.float32)
-        normalized_x, _, _ = self.normalize(np.array(self.X[:, -2:]))
-        self.X[:, -2:] = normalized_x
+        # normalized_x, _, _ = self.normalize(np.array(self.X[:, -2:]))
+        # self.X[:, -2:] = normalized_x
+        standardized_x = self.standardize(np.array(self.X[:, -2:]))
+        self.X[:, -2:] = standardized_x
 
         self.Y = np.array(self.Y)
         self.Y, self.Y_min, self.Y_max = self.normalize(self.Y)
@@ -44,10 +46,18 @@ class Dataset:
         x_min = np.min(x, axis=0) # across the columns -> 6 values
         x_max = np.max(x, axis=0)
         normalized_x_init = ((x - x_min) / (x_max - x_min)) # yields range [0, 1]
+
         # [0, 1] -> -0.5 -> [-0.5, 0.5] -> *2 -> [-1, 1]
-        normalized_x = (normalized_x_init - 0.5) * 2
+        normalized_x = (normalized_x_init - 0.5) * 2 # TODO why we applied scaling?
 
         return normalized_x, x_min, x_max
+
+    def standardize(self, x):
+        nju= np.mean(x, axis=0)
+        std = np.std(x, axis=0)
+        x_stardardized = (x - nju) / std
+
+        return x_stardardized
 
     def __len__(self):
         return len(self.X)
