@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 plt.rcParams["figure.figsize"] = (12, 7) # size of window
 plt.style.use('dark_background')
 
+USE_MAE = False
+#USE_MAE = True
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 16
 TRAIN_TEST_SPLIT = 0.7
@@ -212,14 +214,16 @@ class LossMSE():
         self.y = None
         self.y_prim  = None
 
+    # mse = (1/n)* (y-y')^2
     def forward(self, y: Variable, y_prim: Variable):
         self.y = y
         self.y_prim = y_prim
-        loss = 0 #TODO
+        loss = np.mean((y.value-y_prim.value)**2)
         return loss
 
+    # d mse/dx = -2 * (y-y')
     def backward(self):
-        self.y_prim.grad += 1 #TODO
+        self.y_prim.grad += -2 * ( self.y.value - self.y_prim.value)
 
 
 class LossMAE():
@@ -227,12 +231,14 @@ class LossMAE():
         self.y = None
         self.y_prim = None
 
+    # mae = (1/n) * |y' - y|
     def forward(self, y: Variable, y_prim: Variable):
         self.y = y
         self.y_prim = y_prim
         loss = np.mean(np.abs(y_prim.value - y.value))
         return loss
 
+    # d mae/dx = (y'-y)/|y'-y|
     def backward(self):
         self.y_prim.grad += (self.y_prim.value - self.y.value) / (np.abs(self.y_prim.value - self.y.value) + 1e-8)
 
@@ -312,7 +318,7 @@ optimizer = OptimizerSGD(
     model.parameters(),
     learning_rate=LEARNING_RATE
 )
-loss_fn = LossMAE()
+loss_fn = LossMAE() if USE_MAE else LossMSE()
 
 
 loss_plot_train = []
