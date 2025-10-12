@@ -151,6 +151,7 @@ class LayerSigmoid():
         self.x = None
         self.output = None
 
+    # sig(x) =  1./(1. + np.exp(-x.value))
     def forward(self, x: Variable):
         self.x = x
         self.output = Variable(
@@ -158,9 +159,29 @@ class LayerSigmoid():
         )
         return self.output
 
+    # sig(x)/dx = sig(x)*(1-sig(x))
     def backward(self):
-        self.x.grad += (1. - self.output.value) + self.output.value + self.output.grad
+        self.x.grad += (1. - self.output.value) + self.output.value + self.output.grad # TODO why we add self.output here?
 
+def sigmoid(x):
+    return 1./(1. + np.exp(-x))
+
+class LayerSwish():
+    def __init__(self):
+        self.x = None
+        self.output = None
+
+    # swish(x) =  x/(1. + np.exp(-x.value))
+    def forward(self, x: Variable):
+        self.x = x
+        self.output = Variable(
+            x.value / (1. + np.exp(-x.value))
+        )
+        return self.output
+
+    # swish(x)/dx = swish(x) + sig(x)(1-swish(x))
+    def backward(self):
+        self.x.grad += (self.output.value + sigmoid(self.x.value)*(1. - self.output.value)) + (self.output.value + self.output.grad)
 
 class LayerReLU:
     def __init__(self):
@@ -210,9 +231,11 @@ class Model:
         self.layers = [
             LayerLinear(in_features=6, out_features=4),
             #LayerLinear(in_features=4*EMBEDD_DIM+2, out_features=4),
-            LayerSigmoid(),
+            #LayerSigmoid(),
+            LayerSwish(),
             LayerLinear(in_features=4, out_features=8),
-            LayerSigmoid(),
+            #LayerSigmoid(),
+            LayerSwish(),
             LayerLinear(in_features=8, out_features=2)
         ]
         self.embeddings: list[LayerEmbedding] = []  # embedding is a trainable (learnable) (distances between) vectors
