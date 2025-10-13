@@ -39,11 +39,12 @@ class Dataset:
         self.X = np.array(self.X).astype(np.float32)
         # normalized_x, _, _ = self.normalize(np.array(self.X[:, -2:]))
         # self.X[:, -2:] = normalized_x
-        standardized_x = self.standardize(np.array(self.X[:, -2:]))
+        standardized_x, _, _, _ = self.standardize(np.array(self.X[:, -2:]))
         self.X[:, -2:] = standardized_x
 
         self.Y = np.array(self.Y)
-        self.Y, self.Y_min, self.Y_max = self.normalize(self.Y)
+        #self.Y, self.Y_min, self.Y_max, self.Y_mean = self.normalize(self.Y)
+        self.Y, self.Y_min, self.Y_max, self.Y_mean = self.standardize(self.Y)
 
     def normalize(self, x):
         #x_min = np.min(x) # across whole array
@@ -54,14 +55,17 @@ class Dataset:
         # [0, 1] -> -0.5 -> [-0.5, 0.5] -> *2 -> [-1, 1]
         normalized_x = (normalized_x_init - 0.5) * 2 # TODO why we applied scaling?
 
-        return normalized_x, x_min, x_max
+        return normalized_x, x_min, x_max, np.mean(x, axis=0)
 
     def standardize(self, x):
+        x_min = np.min(x, axis=0)  # across the columns -> 6 values
+        x_max = np.max(x, axis=0)
+
         nju= np.mean(x, axis=0)
         std = np.std(x, axis=0)
         x_stardardized = (x - nju) / std
 
-        return x_stardardized
+        return x_stardardized, x_min, x_max, nju
 
     def __len__(self):
         return len(self.X)
