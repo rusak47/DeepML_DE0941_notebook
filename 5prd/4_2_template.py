@@ -17,7 +17,7 @@ LEARNING_RATE = 1e-3
 BATCH_SIZE = 16
 TRAIN_TEST_SPLIT = 0.7
 EMBEDD_DIM=3
-HUBER_THRESHOLD = 0.09 # TODO which value to put here?
+HUBER_THRESHOLD = 0.99 # 1 - full MAE; 0 - full MSE
 
 #derivative - a change (const = 0 as it doesnt change)
 #gradient - direction of change (point into direction when loss minimizes)
@@ -39,12 +39,12 @@ class Dataset:
         self.X = np.array(self.X).astype(np.float32)
         # normalized_x, _, _ = self.normalize(np.array(self.X[:, -2:]))
         # self.X[:, -2:] = normalized_x
-        standardized_x, _, _, _ = self.standardize(np.array(self.X[:, -2:]))
+        standardized_x, _, _, _, _ = self.standardize(np.array(self.X[:, -2:]))
         self.X[:, -2:] = standardized_x
 
         self.Y = np.array(self.Y)
         #self.Y, self.Y_min, self.Y_max, self.Y_mean = self.normalize(self.Y)
-        self.Y, self.Y_min, self.Y_max, self.Y_mean = self.standardize(self.Y)
+        self.Y, self.Y_min, self.Y_max, self.Y_mean, self.Y_std = self.standardize(self.Y)
 
     def normalize(self, x):
         #x_min = np.min(x) # across whole array
@@ -55,7 +55,7 @@ class Dataset:
         # [0, 1] -> -0.5 -> [-0.5, 0.5] -> *2 -> [-1, 1]
         normalized_x = (normalized_x_init - 0.5) * 2 # TODO why we applied scaling?
 
-        return normalized_x, x_min, x_max, np.mean(x, axis=0)
+        return normalized_x, x_min, x_max, np.mean(x, axis=0), np.std(x, axis=0)
 
     def standardize(self, x):
         x_min = np.min(x, axis=0)  # across the columns -> 6 values
@@ -65,7 +65,7 @@ class Dataset:
         std = np.std(x, axis=0)
         x_stardardized = (x - nju) / std
 
-        return x_stardardized, x_min, x_max, nju
+        return x_stardardized, x_min, x_max, nju, std
 
     def __len__(self):
         return len(self.X)
@@ -214,6 +214,35 @@ class LayerReLU:
     def backward(self):
         self.x.grad += 1 #TODO
 
+class LayerR2Score:
+    def __init__(self, y_mean, std):
+        self.y = None
+        self.y_prim  = None
+        self.score = None
+
+        self.y_mean = y_mean
+        self.std = std
+
+    """
+    R² = 1 → Perfect prediction
+    R² = 0 → Model predicts no better than the mean    
+    R² < 0 → Model is worse than just predicting the mean
+     
+    Copied from: ChatGPT - <https://chatgpt.com/>
+    """
+    # r2 = 1 - sum (y-y')^2 / sum (y-y_mean) ^2
+    def forward(self, y: Variable, y_prim: Variable):
+        self.y = y
+        self.y_prim = y_prim
+        # reverse standardization and only then calculate r2
+        y_curr_nonstd = y.value * self.std + self.y_mean
+        y_prim_nonstd = y_prim.value * self.std + self.y_mean
+        #y_mean =
+
+        #r2 = 1 - np.sum((y.value-y_prim.value)**2) / np.sum((y.value-self.y_mean)**2)
+        r2 = 1 - np.sum((y_curr_nonstd - y_prim_nonstd) ** 2) / np.sum((y_curr_nonstd - self.y_mean) ** 2)
+        self.score = r2
+        return self.score
 
 class LossMSE():
     def __init__(self):
@@ -386,9 +415,11 @@ if USE_HUBER:
 else:
     loss_fn = LossMAE() if USE_MAE else LossMSE()
 
+r2Score_fn = LayerR2Score(dataset_full.Y_mean, dataset_full.Y_std)
 
 loss_plot_train = []
 loss_plot_test = []
+r2Scores = []
 for epoch in range(1, 1000):
 
     for dataloader in [dataloader_train, dataloader_test]:
@@ -402,8 +433,10 @@ for epoch in range(1, 1000):
             # Y' = Linear(sigma(Linear(sigma(Linear(x)))))
             y_prim = model.forward(Variable(value=x)) # prediction
             loss = loss_fn.forward(y=Variable(y), y_prim=y_prim) # how prediction compares to ground truth
+            r2Score = r2Score_fn.forward(y=Variable(y), y_prim=y_prim) # how well model explains data
 
             losses.append(loss)
+            r2Scores.append(r2Score)
 
             if dataloader == dataloader_train:
                 loss_fn.backward()
@@ -418,7 +451,7 @@ for epoch in range(1, 1000):
         else:
             loss_plot_test.append(np.mean(losses))
 
-    print(f'epoch: {epoch} loss_train: {loss_plot_train[-1]} loss_test: {loss_plot_test[-1]}')
+    print(f'epoch: {epoch}: R2: {r2Scores[-1]:.4f};  loss_train: {loss_plot_train[-1]:.4f} loss_test: {loss_plot_test[-1]:.4f}')
 
     if epoch % 10 == 0:
         fig, ax1 = plt.subplots()
