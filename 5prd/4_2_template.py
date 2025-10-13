@@ -12,10 +12,12 @@ plt.style.use('dark_background')
 
 USE_MAE = False
 #USE_MAE = True
+USE_HUBER = True
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 16
 TRAIN_TEST_SPLIT = 0.7
 EMBEDD_DIM=3
+HUBER_THRESHOLD = 0.89 # TODO which value to put here?
 
 #derivative - a change (const = 0 as it doesnt change)
 #gradient - direction of change (point into direction when loss minimizes)
@@ -23,7 +25,7 @@ EMBEDD_DIM=3
 class Dataset:
     def __init__(self):
         super().__init__()
-        path_dataset = 'data/cardekho_india_dataset.pkl'
+        path_dataset = '../data/cardekho_india_dataset.pkl'
         if not os.path.exists(path_dataset):
             os.makedirs('../data', exist_ok=True)
             download_url_to_file(
@@ -225,6 +227,58 @@ class LossMSE():
     def backward(self):
         self.y_prim.grad += -2 * ( self.y.value - self.y_prim.value)
 
+"""
+Huber Loss is a loss function that's a mix between MSE and MAE (Mean Absolute Error). It's designed to be robust to outliers.
+ δ (or γ in your case) is the hyperparameter that controls the "cutoff" between MSE-like behavior and MAE-like behavior.
+ When error is small: behaves like MSE.
+ When error is large: behaves like MAE — more tolerant of outliers.
+
+
+"""
+class LossHuber():
+    def __init__(self, gamma):
+        self.y = None
+        self.y_prim  = None
+        self.gamma = gamma
+
+    # huber = when |y-y'| <= gamma -> 0.5 * (y-y')**
+    #         when        > gamma  -> gamma * (|y-y'| - 0.5 * gamma)
+    def forward(self, y: Variable, y_prim: Variable):
+        self.y = y
+        self.y_prim = y_prim
+        diff = y.value-y_prim.value
+        diff_abs = np.abs(diff)
+
+        ## cant directly check array, use np.lib instead
+        #if diff_abs <= self.gamma:
+        #    loss = 0.5 * diff**2
+        #else:
+        #    loss = self.gamma * (diff_abs - 0.5 * self.gamma)
+
+        # first compute both options
+        # then merge results based on filter condition
+        err_sq = 0.5 * diff**2
+        err_linear = self.gamma * (diff_abs - 0.5 * self.gamma)
+
+        is_err_less = diff_abs <= self.gamma
+        loss = np.mean(np.where(is_err_less, err_sq, err_linear))
+        return loss
+
+    # d huber/dx =  when |y-y'| <= gamma -> (y-y')
+    #                           > gamma  -> gamma * (y-y')/ (|y-y'| + eps)
+    def backward(self):
+        diff = self.y.value - self.y_prim.value
+        diff_abs = np.abs(diff)
+        is_err_less = diff_abs <= self.gamma
+        #if diff_abs <= self.gamma:
+        #    self.y_prim.grad += diff
+        #else:
+        #    self.y_prim.grad += self.gamma * diff / ( diff_abs + 1e-8)
+
+        grad_lq = self.y_prim.grad + diff
+        grad_gt = self.y_prim.grad + self.gamma * diff / ( diff_abs + 1e-8)
+
+        self.y_prim.grad = np.where(is_err_less, grad_lq, grad_gt)
 
 class LossMAE():
     def __init__(self):
@@ -318,7 +372,11 @@ optimizer = OptimizerSGD(
     model.parameters(),
     learning_rate=LEARNING_RATE
 )
-loss_fn = LossMAE() if USE_MAE else LossMSE()
+loss_fn = None
+if USE_HUBER:
+    loss_fn = LossHuber(HUBER_THRESHOLD)
+else:
+    loss_fn = LossMAE() if USE_MAE else LossMSE()
 
 
 loss_plot_train = []
