@@ -17,7 +17,7 @@ LEARNING_RATE = 1e-3
 BATCH_SIZE = 16
 TRAIN_TEST_SPLIT = 0.7
 EMBEDD_DIM=3
-HUBER_THRESHOLD = 0.89 # TODO which value to put here?
+HUBER_THRESHOLD = 0.09 # TODO which value to put here?
 
 #derivative - a change (const = 0 as it doesnt change)
 #gradient - direction of change (point into direction when loss minimizes)
@@ -246,7 +246,9 @@ class LossHuber():
     def forward(self, y: Variable, y_prim: Variable):
         self.y = y
         self.y_prim = y_prim
-        diff = y.value-y_prim.value
+        #diff = y.value-y_prim.value
+        diff = y_prim.value - y.value
+
         diff_abs = np.abs(diff)
 
         ## cant directly check array, use np.lib instead
@@ -262,12 +264,14 @@ class LossHuber():
 
         is_err_less = diff_abs <= self.gamma
         loss = np.mean(np.where(is_err_less, err_sq, err_linear))
+#        loss = np.mean(np.where(is_err_less,  err_linear, err_sq))
         return loss
 
     # d huber/dx =  when |y-y'| <= gamma -> (y-y')
     #                           > gamma  -> gamma * (y-y')/ (|y-y'| + eps)
     def backward(self):
-        diff = self.y.value - self.y_prim.value
+        #diff = self.y.value - self.y_prim.value # !!!NB order is important - this one reverses direction of loss, i.e. increases it
+        diff = self.y_prim.value - self.y.value
         diff_abs = np.abs(diff)
         is_err_less = diff_abs <= self.gamma
         #if diff_abs <= self.gamma:
@@ -276,7 +280,7 @@ class LossHuber():
         #    self.y_prim.grad += self.gamma * diff / ( diff_abs + 1e-8)
 
         grad_lq = self.y_prim.grad + diff
-        grad_gt = self.y_prim.grad + self.gamma * diff / ( diff_abs + 1e-8)
+        grad_gt = self.y_prim.grad + self.gamma * diff / ( diff_abs + 1e-8) # (d mae/dx) * gamma
 
         self.y_prim.grad = np.where(is_err_less, grad_lq, grad_gt)
 
@@ -421,4 +425,7 @@ for epoch in range(1, 1000):
         ax2.legend(loc='upper left')
         ax1.set_xlabel("Epoch")
         ax1.set_ylabel("Loss")
-        plt.show()
+        #plt.show()
+
+        plt.show(block=False)
+        #plt.close(fig) #accumlates heap overuse
