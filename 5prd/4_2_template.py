@@ -57,6 +57,9 @@ class Dataset:
 
         return normalized_x, x_min, x_max, np.mean(x, axis=0), np.std(x, axis=0)
 
+    """
+        ensure data is centered around the mean 
+    """
     def standardize(self, x):
         x_min = np.min(x, axis=0)  # across the columns -> 6 values
         x_max = np.max(x, axis=0)
@@ -207,12 +210,14 @@ class LayerReLU:
         self.output = None
 
     def forward(self, x: Variable):
-        self.x = x #TODO
-        self.output = None
+        self.x = x
+        self.output = Variable(
+            (x.value >= 0)*x.value
+        )
         return self.output
 
     def backward(self):
-        self.x.grad += 1 #TODO
+        self.x.grad += (self.x.value >= 0 ).astype(np.float32) * self.output.grad
 
 class LayerR2Score:
     def __init__(self, y_mean, std):
@@ -387,6 +392,12 @@ class OptimizerSGD:
             param.grad = np.zeros_like(param.grad)
 
 # For later
+"""
+one hot vector optimization
+instead of storing sparse matrix with zeroes where feature belong to one class only, 
+we store some useful features for specific features
+[one hot vector]x[ embedding weight matrix]
+"""
 class LayerEmbedding: # for categorical values cant be directly calculate difference, so embedd vectors for identifying those
     def __init__(self, num_embeddings, embedding_dim):
         self.x_indexes = None
