@@ -176,7 +176,9 @@ class LayerSigmoid():
     def backward(self):
         self.x.grad += self.output.value * (1.0 - self.output.value) * self.output.grad
 
-
+"""
+ O/P layer -> softmax(x) -> [probabilities] 
+"""
 class LayerSoftmax():
     def __init__(self):
         self.x = None
@@ -184,26 +186,48 @@ class LayerSoftmax():
 
     def forward(self, x):
         self.x = x
-        #TODO
+        sum = np.sum(x.value)  + 1e-8
+        self.output = Variable(
+            np.exp(x.value)/sum
+        )
         return self.output
 
-    def backward(self):
-        #TODO
-        pass
+    """
+        For SoftMax, the partial derivatives turn out to be:
+        da_i/dx_j = a_i(1-a_i) if i=j else -a_ia_j
 
+        Copied from: ChatGPT - <https://chatgpt.com/>
+    """
+    def backward(self):
+        #N = self.x.value.shape[0]
+        self.x.grad = self.output.value * (self.output.grad - np.sum(self.output.grad * self.output.value, axis=1, keepdims=True))
+
+        #self.x.grad += (self.output.value - y)/N # applicable if softmax combined with CCE into one layer
 
 class LossCrossEntropy():
     def __init__(self):
+        self.y = None
         self.y_prim = None
+        self.output = None
 
-    def forward(self, y, y_prim):
-        #TODO
-        return 0
+    # L_cce(y,y') = 1/N sum( -y * log(y' + eps) )
+    def forward(self, y:Variable, y_prim:Variable):
+        self.y = y
+        self.y_prim = y_prim
+        self.output = np.mean( -y.value * np.log (y_prim.value + 1e-8))
 
+        return self.output
+
+    # L_cce(y,y')/dy' = 1/N sum( -y / (y' + eps) )
     def backward(self):
-        #TODO
-        pass
-
+        N = self.y.value.shape[0]
+        #self.y_prim.grad = np.mean( -self.y.value / (self.y_prim.value + 1e-8))
+        self.y_prim.grad = (-self.y.value / (self.y_prim.value + 1e-8))/N   # np.mean() computes the average over all elements in the tensor
+                                                                            # — that is, it collapses everything (including the class dimension) into a single scalar.
+                                                                            #  But in backpropagation, we need the per-element gradient — the same shape as y_prim.
+                                                                            #  Thus keep all element-wise gradients, then normalize by batch size N.
+                                                                            # Both methods  are equivalent when computed per element,
+                                                                            # but in code np.mean() would collapse your gradient vector entirely, which is wrong for backprop.   (c) chatgpt
 
 class LayerEmbedding:
     def __init__(self, num_embeddings, embedding_dim):
@@ -214,7 +238,7 @@ class LayerEmbedding:
         self.output: Variable = None
 
     def forward(self, x: Variable):
-        self.x_indexes = x.value.squeeze().astype(np.int)
+        self.x_indexes = x.value.squeeze().astype(np.int32)
         self.output = Variable(np.array(self.emb_m.value[self.x_indexes, :])) # same as dot product with one-hot encoded X and Emb_w
         return self.output
 
