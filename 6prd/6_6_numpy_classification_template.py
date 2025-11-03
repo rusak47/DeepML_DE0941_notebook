@@ -163,6 +163,7 @@ class LayerLinear:
         self.W.grad += np.expand_dims(self.x.value, axis=-1) @ np.expand_dims(self.output.grad, axis=-2)
         self.x.grad += np.squeeze(self.W.value @ np.expand_dims(self.output.grad, axis=-1), axis=-1)
 
+# make -inf .. inf into 0-1 range
 class LayerSigmoid():
     def __init__(self):
         self.x: Variable = None
