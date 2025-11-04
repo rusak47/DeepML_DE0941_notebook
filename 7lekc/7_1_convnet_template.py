@@ -32,12 +32,12 @@ BATCH_SIZE = 128
 MAX_LEN = 200
 TRAIN_TEST_SPLIT = 0.7
 DEVICE = 'cpu'
+DEBUG = False
 
 #total dataset_len: train:47384, test:20308
 if torch.cuda.is_available():
     DEVICE = 'cuda'
-    MAX_LEN = 10_000
-    DEBUG = True
+    MAX_LEN = 10_000 if DEBUG else 0
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self):
@@ -58,6 +58,8 @@ class Dataset(torch.utils.data.Dataset):
         Y_mod = []
         for i in range(len(Y)):
             Y_mod.append(Y[i])
+            #Y_mod.append(Y[i]) # uncomment if transform count is doubled
+
         Y = Y_mod if DEBUG else (Y+Y_mod)
 
         self.Y_idx = Y
@@ -70,11 +72,16 @@ class Dataset(torch.utils.data.Dataset):
 
         X_mod = []
         #apply transform before permute
+        # doesnt affect accuracy, but doubles the processing time
         for i in range(len(X)):
-            mod = self.applyPerspectTransform(X[i])
+            mod = self.applyAugmentTransform(X[i])
             # Add batch dimension at front: unsqueeze(0) to match torch.from_numpy
             X_mod.append(mod.unsqueeze(0)) # add to list with shape (1, 28, 28, 3)
-            #Y_mod.append()
+
+            #todo check which one is better or maybe combined
+            #mod = self.applyPerspectTransform(X[i])
+            #X_mod.append(mod.unsqueeze(0))  # add to list with shape (1, 28, 28, 3)
+
         X_mod = torch.cat(X_mod, dim=0) # pack list into tensor summarizing by first dim (batch count)
         #X = torch.cat((X, X_mod), dim=0) # finally add transformed images to the main tensor batch
         X = X_mod if DEBUG else torch.cat((X, X_mod), dim=0) # debug: epoch: 12 test_loss: 3.45 test_acc: 0.361
@@ -98,6 +105,23 @@ class Dataset(torch.utils.data.Dataset):
     """
     def applyPerspectTransform(self, img, distort_scale = 0.6, probability=1.0):
         return tv_transf.RandomPerspective(distortion_scale=distort_scale, p=probability)(img)
+
+    """
+    Augmentation Transforms
+    The following transforms are combinations of multiple transforms, either geometric or photometric, or both.
+
+    AutoAugment
+    The AutoAugment transform automatically augments data based on a given auto-augmentation policy. 
+    
+    available policies 
+        [v2.AutoAugmentPolicy.CIFAR10, v2.AutoAugmentPolicy.IMAGENET, v2.AutoAugmentPolicy.SVHN]
+
+    Copied from: Illustration of transforms — Torchvision main documentation - <https://docs.pytorch.org/vision/master/auto_examples/transforms/plot_transforms_illustrations.html#augmentation-transforms>
+    """
+    def applyAugmentTransform(self, img, policy = tv_transf.AutoAugmentPolicy.SVHN):
+        #todo check dims and permute accordingly
+        augment = tv_transf.AutoAugment(policy)(img.permute(2,0,1)) # 3, 28, 28
+        return augment.permute(1, 2, 0)
 
     """
         The RandomAffine transform (see also affine()) performs random affine transform on an image.
