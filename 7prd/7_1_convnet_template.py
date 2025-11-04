@@ -33,6 +33,7 @@ MAX_LEN = 200
 TRAIN_TEST_SPLIT = 0.7
 DEVICE = 'cpu'
 DEBUG = False
+DEBUG = True
 
 #total dataset_len (initial): train:47384, test:20308
 if torch.cuda.is_available():
@@ -180,9 +181,11 @@ dataloader_test = torch.utils.data.DataLoader(
     drop_last=(len(dataset_test) % BATCH_SIZE == 1)
 )
 
-
+"""
+:returns  int((in_size + 2 * padding - kernel_size)/stride) + 1
+"""
 def get_out_size(in_size, padding, kernel_size, stride):
-    out = int((in_size + 2 * padding - kernel_size)/stride)   + 1
+    out = int((in_size + 2 * padding - kernel_size)/stride) + 1
     return out
 
 
@@ -239,7 +242,6 @@ class Conv2d(torch.nn.Module):
 class BatchNorm2d(torch.nn.Module):
     def __init__(self, num_features):
         super().__init__()
-        #torch.nn.BatchNorm2d
         self.num_features = num_features
         self.gamma = torch.nn.Parameter(torch.ones(1, self.num_features, 1, 1))
         self.beta = torch.nn.Parameter(torch.zeros(1, self.num_features, 1, 1))
@@ -255,8 +257,8 @@ class BatchNorm2d(torch.nn.Module):
         In PyTorch, image-like tensors (for example, batches of RGB images) often have 4 dimensions:
         (batch, channels, height, width)
         permute() reorders the dimensions according to the order you specify.
-            Original order: (0, 1, 2, 3) → (N, C, H, W)
-            New order: (0, 2, 3, 1) → (N, H, W, C)
+            Original order: (0, 1, 2, 3) → (BNum, Ch, Hei, Wid)
+            New order: (0, 2, 3, 1) → (B, H, W, C)
 
         Different frameworks expect image data in different orders:
             Framework / API	Expected shape
@@ -265,13 +267,14 @@ class BatchNorm2d(torch.nn.Module):
 
         Copied from: ChatGPT - <https://chatgpt.com/>
         """
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(0, 2, 3, 1) # todo do we need that - was already permutted at dataset initialization
         x = x.reshape(-1, self.num_features) # -1 tells to compute rows count automatically, so the element count doesn't change
+                                            # todo why? in case features are more that shape?
 
         if self.training:
             # TODO
-            #mean = torch.mean(x)
-            #var = torch.mean()
+            mean = torch.mean(x)
+            var = 0
             self.train_mean_list.append(mean)
             self.train_var_list.append(var)
         else:
@@ -282,7 +285,7 @@ class BatchNorm2d(torch.nn.Module):
                 self.train_var_list.clear()
             # TODO
 
-        # TODO
+        # TODO reshape back?
         out = x
         return out
 
@@ -296,52 +299,130 @@ class MaxPool2d(torch.nn.Module):
         self.padding = padding
 
     def forward(self, x):
-        batch_size = x.size(0)
         channels = x.size(1)
+
+        batch_size = x.size(0)
         in_size = x.size(-1)  # last dim from (B, C, W, H)
         out_size = get_out_size(in_size, self.padding, self.kernel_size, self.stride)
 
-        out = x  # TODO
+        # making a template of o/p (B C W H)
+        out = torch.zeros(batch_size, channels, out_size, out_size).to(DEVICE)
+
+        # create padding template
+        x_padd = x
+        x_padd_size = in_size + 2 * self.padding
+        if self.padding > 0:
+            x_padd = torch.zeros(batch_size, channels, x_padd_size, x_padd_size).to(DEVICE)
+
+            ## insert image into center of the padding template
+            x_padd[:, :, self.padding: -self.padding, self.padding: -self.padding] = x
+
+        # iterate over image with kernel_size step and select max value for each, reducing dimensions
+        i_out = 0
+        for i in range(0, x_padd_size - self.kernel_size, self.stride):
+            j_out = 0
+            for j in range(0, x_padd_size - self.kernel_size, self.stride):
+                x_box = x_padd[:, :, i: i + self.kernel_size, j: j + self.kernel_size]  # cut out box
+                x_flat = x_box.reshape(batch_size, self.kernel_size * self.kernel_size * channels)
+
+                #y_flat = (K_flat.t() @ x_flat[:, :, None])[:, :, 0]  # add extra dim and remove it
+                y_flat = x_flat.max()
+                out[:, :, i_out, j_out] = y_flat
+                j_out += 1
+            i_out += 1
 
         return out
 
+#TODO
+class LayerLinear:
+    def __init__(self, in_features: int, out_features: int):
+        """self.W:  Variable = Variable(
+            value=np.random.uniform(low=-1, size=(in_features, out_features)),
+            grad=np.zeros(shape=(BATCH_SIZE, in_features, out_features))
+        )
+        self.b: Variable = Variable(
+            value=np.zeros(shape=(out_features,)),
+            grad=np.zeros(shape=(BATCH_SIZE, out_features))
+        )"""
+        self.x = None
+        self.output = None
+
+    def forward(self, x):
+        self.x = x
+        self.output = 0
+            #np.squeeze(self.W.value.T @ np.expand_dims(x.value, axis=-1), axis=-1) + self.b.value
+
+        return self.output
+
+    def backward(self):
+        self.b += 1*self.output
+        #self.b.grad += 1 * self.output.grad
+        #self.W.grad += np.expand_dims(self.x.value, axis=-1) @ np.expand_dims(self.output.grad, axis=-2)
+        #self.x.grad += np.squeeze(self.W.value @ np.expand_dims(self.output.grad, axis=-1), axis=-1)
+
+"""
+ O/P layer -> softmax(x) -> [probabilities] 
+"""
+#TODO
+class LayerSoftmax():
+    def __init__(self):
+        self.x = None
+        self.output = None
+
+    def forward(self, x):
+        self.x = x
+        sum = np.sum(x.value)  + 1e-8
+        self.output = np.exp(x.value)/sum
+
+        return self.output
+
+    """
+        For SoftMax, the partial derivatives turn out to be:
+        da_i/dx_j = a_i(1-a_i) if i=j else -a_ia_j
+
+        Copied from: ChatGPT - <https://chatgpt.com/>
+    """
+    def backward(self):
+        #N = self.x.value.shape[0]
+        self.x.grad = self.output.value * (self.output.grad - np.sum(self.output.grad * self.output.value, axis=1, keepdims=True))
 
 class Model(torch.nn.Module):
     def __init__(self): # arhitecture
         super().__init__()
+        num_features = 28 # todo how much feature image have 28,28,3
 
+        last_out_channels = 17
         self.encoder = torch.nn.Sequential(
+            # todo exact way to determine arguments for each method
             Conv2d(in_channels=3, out_channels=5, kernel_size=3, stride=1, padding=1), # rgb 3 channels;
-            BatchNorm2d(),
+            #BatchNorm2d(5),
+            torch.nn.BatchNorm2d(5),
             torch.nn.ReLU(),
-            MaxPool2d(),
+            MaxPool2d(kernel_size=4, stride=2, padding=1),
+            #torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
 
             Conv2d(in_channels=5, out_channels=9, kernel_size=3, stride=1, padding=1),
-            BatchNorm2d(),
+            #BatchNorm2d(9),
+            torch.nn.BatchNorm2d(9),
             torch.nn.ReLU(),
-            MaxPool2d(),
+            MaxPool2d(kernel_size=4, stride=2, padding=1),
+            #torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
 
-            Conv2d(in_channels=9, out_channels=3, kernel_size=3, stride=1, padding=1),
-            #LayerLinear(),
-            #LayerSoftmax()
-
+            Conv2d(in_channels=9, out_channels=last_out_channels, kernel_size=3, stride=1, padding=1),
         )
-        """
-        self.encoder = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=3, out_channels=8, kernel_size=5, stride=2, padding=1),  # rgb 3 channels;
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1), torch.nn.ReLU(),
-            torch.nn.Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1), torch.nn.ReLU(),
-            torch.nn.Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1), torch.nn.ReLU(),
-            torch.nn.Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1), torch.nn.ReLU(),
-            torch.nn.Conv2d(in_channels=16, out_channels=32, kernel_size=5, stride=2, padding=1),
-        )"""
 
-        out_size = get_out_size(28, kernel_size=5, stride=2, padding=1) # calc size for .fc
-        out_size = get_out_size(out_size, kernel_size=5, stride=2, padding=1)  # calc size for .fc
+
+        # calc in_features for linear layer
+        # NB stride > 1 reduces feature count (hop)
+        # count only those with stride above 1 as they impact on feature count
+        #out_size = get_out_size(28, kernel_size=3, stride=1, padding=1) # simulate first layer - Conv2D
+        out_size = get_out_size(28, kernel_size=4, stride=2, padding=1)  # simulate next MaxPool2D
+        #out_size = get_out_size(out_size, kernel_size=3, stride=1, padding=1)  # simulate next Conv2D
+        out_size = get_out_size(out_size, kernel_size=4, stride=2, padding=1) # simulate next layer - MaxPool2D
 
         self.fc = torch.nn.Linear(  # TODO
-            in_features=out_size*out_size*32, # MAKE SURE ITS A SQUARE
+            #in_features=out_size*out_size*32, # MAKE SURE ITS A SQUARE
+            in_features=out_size*out_size*last_out_channels,
             out_features=len(dataset_full.labels)
         )
 
@@ -349,7 +430,11 @@ class Model(torch.nn.Module):
         batch_size = x.size(0)
         out = self.encoder.forward(x)
         #out_flat = out.view(-1, self.fc.in_features) # -1 does bad things
+        #print("out shape before flatten:", out.shape)
+        #print("numel per sample:", out[0].numel())
+
         out_flat = out.view(batch_size, self.fc.in_features)
+        #  shape '[100, 1152]' is invalid for input of size 235200 <- recalculate linear layer in_params
         logits = self.fc.forward(out_flat)
         y_prim = torch.softmax(logits, dim=1)
         return y_prim
