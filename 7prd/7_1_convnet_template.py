@@ -1,31 +1,44 @@
 from collections import Counter
 
-import torch
 import numpy as np
-import torchvision
 import matplotlib
 import matplotlib.pyplot as plt
+
+import torchvision
+from torchvision.transforms import v2 as tv_transf
+
+import torch
 from torch.hub import download_url_to_file
-import os
-import pickle
 import torch.utils.data
 import torch.nn.functional as F
 from torch.utils.data import Subset
+
+import os
+import pickle
 from tqdm import tqdm
 import sklearn.model_selection
 
 plt.rcParams["figure.figsize"] = (15, 5)
 plt.style.use('dark_background')
 
+# if you change the seed, make sure that the randomly-applied transforms
+# properly show that the image can be both transformed and *not* transformed!
+#torch.manual_seed(0)
+
+# Copied from: Illustration of transforms — Torchvision main documentation - <https://docs.pytorch.org/vision/master/auto_examples/transforms/plot_transforms_illustrations.html#sphx-glr-auto-examples-transforms-plot-transforms-illustrations-py>
+
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 128
 MAX_LEN = 200
 TRAIN_TEST_SPLIT = 0.7
 DEVICE = 'cpu'
+DEBUG = False
 
+#total dataset_len (initial): train:47384, test:20308
 if torch.cuda.is_available():
     DEVICE = 'cuda'
-    MAX_LEN = 0
+    #MAX_LEN = 0
+    MAX_LEN = 10_000 if DEBUG else 0
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -42,6 +55,12 @@ class Dataset(torch.utils.data.Dataset):
             )
         with open(path_dataset, 'rb') as fp:
             X, Y, self.labels = pickle.load(fp)
+
+        # double Y to match transformed image count
+        Y_mod = []
+        for i in range(len(Y)):
+            Y_mod.append(Y[i])
+        Y = Y_mod if DEBUG else (Y + Y_mod)
         self.Y_idx = Y
 
         Y_counter = Counter(Y)
@@ -49,10 +68,70 @@ class Dataset(torch.utils.data.Dataset):
         self.Y_weights = (1.0 / Y_counts) * np.sum(Y_counts)
 
         X = torch.from_numpy(np.array(X).astype(np.float32))
+
+        X_mod = []
+        #apply transform before permute
+        for i in range(len(X)):
+            mod = self.applyPerspectTransform(X[i]) # doesnt affect accuracy, but doubles the processing time
+            #mod = self.applyAugmentTransform(X[i]) # lowers accurracy drastically
+            # Add batch dimension at front: unsqueeze(0) to match torch.from_numpy
+            X_mod.append(mod.unsqueeze(0)) # add to list with shape (1, 28, 28, 3)
+            #Y_mod.append()
+        X_mod = torch.cat(X_mod, dim=0) # pack list into tensor summarizing by first dim (batch count)
+        #X = torch.cat((X, X_mod), dim=0) # finally add transformed images to the main tensor batch
+        X = X_mod if DEBUG else torch.cat((X, X_mod), dim=0) # debug x_mod only: epoch: 12 test_loss: 3.45 test_acc: 0.361
+
         self.X = X.permute(0, 3, 1, 2)
         self.input_size = self.X.size(-1)
         Y = torch.LongTensor(Y)
         self.Y = F.one_hot(Y)
+
+    """
+    Add to Dataset class 
+        - transform 
+        - and augmentation 
+        using torchvision augmentations 
+    https://pytorch.org/vision/master/auto_examples/transforms/plot_transforms_illustrations.html#sphx-glr-auto-examples-transforms-plot-transforms-illustrations-py
+    """
+
+    """
+        The RandomPerspective transform (see also perspective()) performs random perspective transform on an image.
+
+    """
+
+    def applyPerspectTransform(self, img, distort_scale=0.6, probability=1.0):
+        return tv_transf.RandomPerspective(distortion_scale=distort_scale, p=probability)(img)
+
+    """
+       Augmentation Transforms
+       The following transforms are combinations of multiple transforms, either geometric or photometric, or both.
+
+       AutoAugment
+       The AutoAugment transform automatically augments data based on a given auto-augmentation policy. 
+
+       available policies 
+           [v2.AutoAugmentPolicy.CIFAR10, v2.AutoAugmentPolicy.IMAGENET, v2.AutoAugmentPolicy.SVHN]
+
+       Copied from: Illustration of transforms — Torchvision main documentation - <https://docs.pytorch.org/vision/master/auto_examples/transforms/plot_transforms_illustrations.html#augmentation-transforms>
+       """
+
+    def applyAugmentTransform(self, img, policy=tv_transf.AutoAugmentPolicy.SVHN):
+        # todo check dims and permute accordingly
+        augment = tv_transf.AutoAugment(policy)(img.permute(2, 0, 1))  # 3, 28, 28
+        return augment.permute(1, 2, 0)
+
+    """
+        The RandomAffine transform (see also affine()) performs random affine transform on an image.
+        TODO faulty colorscheme in result
+    """
+    # def applyAffineTransform(self, img, degrees=(5,15), translate=(0.01,0.03), scale=(0.7, 1.1)):
+    #    return tv_transf.RandomAffine(degrees=degrees, translate=translate, scale=scale)(img)
+
+    # TODO returns wrong dimension or doesnt work
+    #def addPadding(self, img, padding=[1, ]):
+    #    return tv_transf.Pad(padding=padding)(img)
+        # padded_imgs = [v2.Pad(padding=padding)(orig_img) for padding in (3, 10, 30, 50)]
+        # plot([orig_img] + padded_imgs)
 
     def __len__(self):
         return len(self.X)
@@ -75,10 +154,14 @@ idxes_train, idxes_test = sklearn.model_selection.train_test_split(
     random_state=0
 )
 
+print(f"initial dataset_len: train:{len(idxes_train)}, test:{len(idxes_test)}")
+
 # For debugging
 if MAX_LEN:
     idxes_train = idxes_train[:MAX_LEN]
     idxes_test = idxes_test[:MAX_LEN]
+
+print(f"used dataset_len: train:{len(idxes_train)}, test:{len(idxes_test)}")
 
 dataset_train = Subset(dataset_full, idxes_train)
 dataset_test = Subset(dataset_full, idxes_test)
@@ -156,7 +239,7 @@ class Conv2d(torch.nn.Module):
 class BatchNorm2d(torch.nn.Module):
     def __init__(self, num_features):
         super().__init__()
-
+        #torch.nn.BatchNorm2d
         self.num_features = num_features
         self.gamma = torch.nn.Parameter(torch.ones(1, self.num_features, 1, 1))
         self.beta = torch.nn.Parameter(torch.zeros(1, self.num_features, 1, 1))
@@ -168,16 +251,31 @@ class BatchNorm2d(torch.nn.Module):
         self.train_var = torch.ones(1, self.num_features, 1, 1)
 
     def forward(self, x):
+        """
+        In PyTorch, image-like tensors (for example, batches of RGB images) often have 4 dimensions:
+        (batch, channels, height, width)
+        permute() reorders the dimensions according to the order you specify.
+            Original order: (0, 1, 2, 3) → (N, C, H, W)
+            New order: (0, 2, 3, 1) → (N, H, W, C)
+
+        Different frameworks expect image data in different orders:
+            Framework / API	Expected shape
+                PyTorch	(N, C, H, W)
+                TensorFlow / Keras / OpenCV	(N, H, W, C)
+
+        Copied from: ChatGPT - <https://chatgpt.com/>
+        """
         x = x.permute(0, 2, 3, 1)
-        x = x.reshape(-1, self.num_features)
+        x = x.reshape(-1, self.num_features) # -1 tells to compute rows count automatically, so the element count doesn't change
 
         if self.training:
             # TODO
-
+            #mean = torch.mean(x)
+            #var = torch.mean()
             self.train_mean_list.append(mean)
             self.train_var_list.append(var)
         else:
-            if len(self.train_mean_list):
+            if len(self.train_mean_list): # zero is treated as false
                 self.train_mean = torch.mean(torch.stack(self.train_mean_list), axis=0)
                 self.train_var = torch.mean(torch.stack(self.train_var_list), axis=0)
                 self.train_mean_list.clear()
@@ -188,7 +286,7 @@ class BatchNorm2d(torch.nn.Module):
         out = x
         return out
 
-
+# 1) Implement the MaxPool2D kernel function.
 class MaxPool2d(torch.nn.Module):
     def __init__(self, kernel_size, stride, padding):
         super().__init__()
@@ -213,13 +311,20 @@ class Model(torch.nn.Module):
         super().__init__()
 
         self.encoder = torch.nn.Sequential(
-            Conv2d(in_channels=3, out_channels=8, kernel_size=5, stride=2, padding=1), # rgb 3 channels;
+            Conv2d(in_channels=3, out_channels=5, kernel_size=3, stride=1, padding=1), # rgb 3 channels;
+            BatchNorm2d(),
             torch.nn.ReLU(),
-            Conv2d(in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1),torch.nn.ReLU(),
-            Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1),torch.nn.ReLU(),
-            Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1),torch.nn.ReLU(),
-            Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1),torch.nn.ReLU(),
-            Conv2d(in_channels=16, out_channels=32, kernel_size=5, stride=2, padding=1),
+            MaxPool2d(),
+
+            Conv2d(in_channels=5, out_channels=9, kernel_size=3, stride=1, padding=1),
+            BatchNorm2d(),
+            torch.nn.ReLU(),
+            MaxPool2d(),
+
+            Conv2d(in_channels=9, out_channels=3, kernel_size=3, stride=1, padding=1),
+            #LayerLinear(),
+            #LayerSoftmax()
+
         )
         """
         self.encoder = torch.nn.Sequential(
