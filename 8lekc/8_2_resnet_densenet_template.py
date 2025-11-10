@@ -156,22 +156,48 @@ class DenseBlock(torch.nn.Module):
         # TODO
         return x
 
+# to adapt changes in the sizes
 class TransitionLayer(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        # TODO
+
+        self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.bn = torch.nn.BatchNorm2d(num_features=out_channels)
+        self.avg_pool = torch.nn.AvgPool2d(kernel_size=2, stride=2)
 
     def forward(self, x):
-        # TODO
-        return x
+        out = self.conv.forward(x)
+        out = torch.relu(out)
+        out = self.bn.forward(out)
+
+        out = self.avg_pool(out)
+
+        return out
 
 class DenseNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        # TODO
+        self.conv1 = torch.nn.Conv2d(in_channels=3, out_channels=12, kernel_size=3, stride=1, padding=1)
+        self.densebl1 = DenseBlock()
+        self.densebl2 = DenseBlock()
+        self.densebl3 = DenseBlock()
+
+        self.trans_layer01 = TransitionLayer(in_channels=160, out_channels=32)
+        self.trans_layer02 = TransitionLayer(in_channels=160, out_channels=32)
+        self.trans_layer03 = TransitionLayer(in_channels=160, out_channels=32)
+
+        self.linear = torch.nn.Linear(in_features=32*3*3, out_features=len(dataset_full.labels))
 
     def forward(self, x):
-        # TODO
+        out = self.conv1.forward(x)
+
+        out = self.densebl1.forward(out)
+        out = self.trans_layer01.forward(out)
+        out = self.densebl2.forward(out)
+        out = self.trans_layer02.forward(out)
+        out = self.densebl3.forward(out)
+        out = self.trans_layer03.forward(out)
+
         return x
 
 
