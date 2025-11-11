@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib
 import torchvision
 from torch.hub import download_url_to_file
+from torch.utils.data import Subset
 from tqdm import tqdm # pip install tqdm
 import random
 
@@ -19,9 +20,13 @@ import scipy.misc
 import scipy.ndimage
 import sklearn.decomposition
 
+from PIL import Image # to load custom images
+TEST_CUSTOM_ONLY = True
+#TEST_CUSTOM_ONLY = False
+
 BATCH_SIZE = 64
 LEARNING_RATE = 1e-4
-TRAIN_TEST_SPLIT = 0.8
+TRAIN_TEST_SPLIT = 1 if TEST_CUSTOM_ONLY else 0.8 # for simplicity test only images out of train dataset
 DEVICE = 'cuda'
 MAX_LEN = 0
 
@@ -31,11 +36,16 @@ if not torch.cuda.is_available():
     BATCH_SIZE = 6
 
 
-
 class DatasetApples(torch.utils.data.Dataset):
     def __init__(self):
         super().__init__()
-        path_dataset = '../data/apples_dataset.pkl'
+        curdir = os.getcwd()
+        rootpath = 'data' ## why this bug hapened!?
+        if not curdir.endswith('PyCharmMiscProject'):
+            rootpath = '../'+rootpath
+
+        path_dataset = rootpath + '/apples_dataset.pkl'
+        print(f'{curdir}; {path_dataset} exists {os.path.exists(path_dataset)}')
         if not os.path.exists(path_dataset):
             os.makedirs('../data', exist_ok=True)
             download_url_to_file(
@@ -46,10 +56,43 @@ class DatasetApples(torch.utils.data.Dataset):
         with open(path_dataset, 'rb') as fp:
             X, Y, self.labels = pickle.load(fp)
 
+        """
+            Add examples from outside the dataset to the test set data 
+            and check whether they are distinguished as anomalies in the latent Z space 
+            
+            To make this simplest test only custom pictures (flag switch)
+        """
+
+        custom_samples_path = rootpath + '/samples/apples/100x100/'
+
+        image_paths = [
+            (f'{custom_samples_path}apple_sample1.png', len(self.labels), 'C apple'), # yelow
+            (f'{custom_samples_path}apple_sample2.png', len(self.labels), 'C apple'), # red
+            (f'{custom_samples_path}apple_sample3.png', len(self.labels)+1, 'Fake'), #fake
+            (f'{custom_samples_path}apple_sample4.png', len(self.labels), 'C apple'), # real
+            (f'{custom_samples_path}apple_sample5.png', len(self.labels)+1, 'Fake'), # candy
+            (f'{custom_samples_path}apple_sample6.png', len(self.labels)+1, 'Fake') # Apple
+        ]
+
+        self.labels.append('C apple')
+        self.labels.append('Fake')
+
+        print(f"dataset length before {len(X)}") #2374
+        for img_p, idx, lbl in image_paths:
+            img = Image.open(img_p).convert("RGB")
+            print(f" > custom image {img_p} loaded with label {lbl}: {img.size}")
+
+            img = np.array(img)
+            X.append(img)
+            Y.append(idx)
+
+        print(f"dataset length after {len(X)}") # 2374 + 6
+
         X = torch.from_numpy(np.array(X))
         self.X = X.permute(0, 3, 1, 2)
         self.input_size = self.X.size(-1)
-        Y = torch.LongTensor(Y)
+        # dataset label indices, starting from 0
+        Y = torch.LongTensor(Y) # Converts label indices into integer tensors
         self.Y = Y.unsqueeze(dim=-1)
 
     def __len__(self):
@@ -69,14 +112,20 @@ class DatasetApples(torch.utils.data.Dataset):
 
         return x, y_target, y_label
 
-
 dataset_full = DatasetApples()
-train_test_split = int(len(dataset_full) * TRAIN_TEST_SPLIT)
+
+test_indices = list(range(len(dataset_full)-6, len(dataset_full), 1)) #added anomalies are at the end of list
+remaining_indices = list(set(range(len(dataset_full))) - set(test_indices)) # identify remaining indices for random split
+remaining_dataset = Subset(dataset_full, remaining_indices) # full minus anomalies
+
+train_test_split = int(len(remaining_dataset) * TRAIN_TEST_SPLIT) # for simplicity dont account for added anomalies into test
 dataset_train, dataset_test = torch.utils.data.random_split(
-    dataset_full,
-    [train_test_split, len(dataset_full) - train_test_split],
+    remaining_dataset,
+    [train_test_split, len(remaining_dataset) - train_test_split],
     generator=torch.Generator().manual_seed(0)
 )
+
+dataset_test = Subset(dataset_full, dataset_test.indices+ test_indices)
 
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
@@ -92,7 +141,10 @@ data_loader_test = torch.utils.data.DataLoader(
     drop_last=(len(dataset_test) % BATCH_SIZE == 1)
 )
 
-
+"""
+ Denoising Autoencoder—a type of neural network used for unsupervised learning. 
+ It’s a variant of the standard autoencoder, designed not only to learn efficient data representations but also to be robust to noise.
+"""
 class AutoEncoder(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -204,6 +256,8 @@ for epoch in range(1, 100):
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
+            #else: # testing stage
+                # TODO identify custom images to map predicted result
 
             np_y_prim = y_prim.cpu().data.numpy()
             np_z = z.cpu().data.numpy()
@@ -251,7 +305,7 @@ for epoch in range(1, 100):
     np_z = pca.fit_transform(np_z)
     np_z_label = np.array(metrics_epoch[f'train_labels'])
     scatter = plt.scatter(np_z[:, -1], np_z[:, -2], c=np_z_label)
-    plt.legend(handles=scatter.legend_elements()[0], labels=dataset_full.labels)
+    plt.legend(handles=scatter.legend_elements()[0], labels=dataset_full.labels[:-2]) #exclude custom labels as train dataset doesnt have them
 
     plt.subplot(224) # row col idx
 
@@ -259,8 +313,17 @@ for epoch in range(1, 100):
     np_z = np.array(metrics_epoch[f'test_z'])
     np_z = pca.fit_transform(np_z)
     np_z_label = np.array(metrics_epoch[f'test_labels'])
+
     scatter = plt.scatter(np_z[:, -1], np_z[:, -2], c=np_z_label)
-    plt.legend(handles=scatter.legend_elements()[0], labels=dataset_full.labels)
+
+    # Generate legend handles & labels automatically from the scatter
+    handles, labels = scatter.legend_elements()
+
+    # remove duplicates from list to match handles size
+    _labels = [dataset_full.labels[idx] for idx in np.unique(np_z_label) ]
+
+    #plt.legend(handles=scatter.legend_elements()[0], labels=dataset_full.labels)
+    plt.legend(handles, _labels)
 
     plt.tight_layout(pad=0.5)
     plt.show()
