@@ -122,14 +122,14 @@ class DenseBlock(torch.nn.Module):
         super().__init__()
         # TODO
         self.conv1 = torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=1, bias=False)
-        self.conv2 = torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=1, bias=False)
-        self.conv3 = torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=1, bias=False)
-        self.conv4 = torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=1, bias=False)
+        self.conv2 = torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, padding=1, bias=False) #stacking on top 32+32
+        self.conv3 = torch.nn.Conv2d(in_channels=96, out_channels=32, kernel_size=3, padding=1, bias=False) # 64+32
+        self.conv4 = torch.nn.Conv2d(in_channels=128, out_channels=32, kernel_size=3, padding=1, bias=False) # 96+32
 
-        self.bn1 = torch.nn.BatchNorm2d(num_features=32)
-        self.bn1 = torch.nn.BatchNorm2d(num_features=64) #stacking on top 32+32
-        self.bn1 = torch.nn.BatchNorm2d(num_features=96) # 64+32
-        self.bn1 = torch.nn.BatchNorm2d(num_features=128) # 96+32
+        self.bn1 = torch.nn.BatchNorm2d(num_features=32) # conv scales back to 32
+        self.bn2 = torch.nn.BatchNorm2d(num_features=32)
+        self.bn3 = torch.nn.BatchNorm2d(num_features=32)
+        self.bn4 = torch.nn.BatchNorm2d(num_features=32)
 
     def forward(self, x):
         conv1 = self.conv1.forward(x)
@@ -139,22 +139,22 @@ class DenseBlock(torch.nn.Module):
         conv2_in = torch.cat([x, conv1], dim=1)
         conv2 = self.conv2.forward(conv2_in)
         conv2 = torch.relu(conv2)
-        conv2 = self.bn1.forward(conv2)
+        conv2 = self.bn2.forward(conv2)
 
         conv3_in = torch.cat([x, conv1, conv2], dim=1)
         conv3 = self.conv3.forward(conv3_in)
         conv3 = torch.relu(conv3)
-        conv3 = self.bn1.forward(conv3)
+        conv3 = self.bn3.forward(conv3)
 
         conv4_in = torch.cat([x, conv1, conv2, conv3], dim=1)
         conv4 = self.conv4.forward(conv4_in)
         conv4 = torch.relu(conv4)
-        conv4 = self.bn1.forward(conv4)
+        conv4 = self.bn4.forward(conv4)
 
         out = torch.cat([x, conv1, conv2, conv3, conv4], dim=1)
 
         # TODO
-        return x
+        return out
 
 # to adapt changes in the sizes
 class TransitionLayer(torch.nn.Module):
@@ -177,7 +177,7 @@ class TransitionLayer(torch.nn.Module):
 class DenseNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = torch.nn.Conv2d(in_channels=3, out_channels=12, kernel_size=3, stride=1, padding=1)
+        self.conv1 = torch.nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1)
         self.densebl1 = DenseBlock()
         self.densebl2 = DenseBlock()
         self.densebl3 = DenseBlock()
@@ -193,12 +193,18 @@ class DenseNet(torch.nn.Module):
 
         out = self.densebl1.forward(out)
         out = self.trans_layer01.forward(out)
+
         out = self.densebl2.forward(out)
         out = self.trans_layer02.forward(out)
+
         out = self.densebl3.forward(out)
         out = self.trans_layer03.forward(out)
 
-        return x
+        out = out.view(out.size(0), -1)
+        out = self.linear.forward(out)
+        out = F.softmax(out, dim=1)
+
+        return out
 
 
 class ModelResnet(torch.nn.Module):
@@ -273,7 +279,8 @@ class Model(torch.nn.Module):
         out = F.softmax(out, dim=1)
         return out
 
-model = Model()
+#model = Model()
+model = DenseNet()
 loss_func = LossCrossEntropy()
 optimizer = torch.optim.RMSprop(model.parameters(), lr=1e-4)
 
