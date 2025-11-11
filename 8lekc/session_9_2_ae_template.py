@@ -58,9 +58,15 @@ class DatasetApples(torch.utils.data.Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        x = self.X[idx] / 255
+        y_target = self.X[idx].float() / 255
         y_label = self.Y[idx]
-        y_target = x
+
+        x = y_target.clone()
+
+        # with a 50% chance corrupt input
+        if random.random() < 0.5:
+            x[torch.rand(x.shape) < 0.5] = 0
+
         return x, y_target, y_label
 
 
@@ -92,13 +98,55 @@ class AutoEncoder(torch.nn.Module):
         super().__init__()
         # Input (B, 3, 100, 100)
         self.encoder = torch.nn.Sequential(
-            #TODO
+            #100,100->50,50
+            torch.nn.Conv2d(in_channels=3, out_channels=4, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=4),
+
+            #50,50 -> 24,24
+            torch.nn.Conv2d(in_channels=4, out_channels=8, kernel_size=8, stride=2, padding=2),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=8),
+
+            #24,24 -> 6,6
+            torch.nn.Conv2d(in_channels=8, out_channels=8, kernel_size=8, stride=4, padding=2),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=8),
+
+            #6,6 -> 3,3
+            torch.nn.Conv2d(in_channels=8, out_channels=16, kernel_size=4, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=16),
+
+            #3,3 -> 1,1 (latent space - compressed, abstract representation of data — a kind of “hidden” space where the model organizes information in a meaningful way.)
+            torch.nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=32),
 
         )
 
-        self.decoder = torch.nn.Sequential(
-            torch.nn.Upsample(size=100),
-            torch.nn.Conv2d(in_channels=32, out_channels=3, kernel_size=3, stride=1, padding=1)
+        self.decoder = torch.nn.Sequential( # has to be rebuilt symmetrically
+            #torch.nn.Upsample(size=100),
+            #torch.nn.Conv2d(in_channels=32, out_channels=3, kernel_size=3, stride=1, padding=1)
+            # conv2d has floor division -> when stride doesnt divide dim size, information needs to be updated with o/p padding
+            torch.nn.ConvTranspose2d(in_channels=32, out_channels=16, kernel_size=4, stride=2, padding=1, output_padding=1),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=16),
+
+            torch.nn.ConvTranspose2d(in_channels=16, out_channels=8, kernel_size=4, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=8),
+
+            torch.nn.ConvTranspose2d(in_channels=8, out_channels=8, kernel_size=8, stride=4, padding=2),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=8),
+
+            torch.nn.ConvTranspose2d(in_channels=8, out_channels=4, kernel_size=8, stride=2, padding=2),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm2d(num_features=4),
+
+            torch.nn.ConvTranspose2d(in_channels=4, out_channels=3, kernel_size=3, stride=2, padding=1, output_padding=1),
+            torch.nn.Sigmoid()
         )
 
 
@@ -108,8 +156,15 @@ class AutoEncoder(torch.nn.Module):
         y_prim = self.decoder.forward(z.view(-1, 32, 1, 1))
         return y_prim, z
 
+class LossMSE(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, y, y_prim):
+        return torch.mean(torch.abs(y_prim - y))
 
 model = AutoEncoder()
+loss_func = LossMSE()
 
 dummy = torch.randn((BATCH_SIZE, 3, 100, 100))
 y_target = model.forward(dummy)
@@ -142,7 +197,7 @@ for epoch in range(1, 100):
             y_label = y_label.squeeze().to(DEVICE)
 
             y_prim, z = model.forward(x) # return predicted value and squished vector (compressed/scaled down)
-            loss = 0 # TODO
+            loss = loss_func.forward(y_target, y_prim) # TODO could be mean squared error - any fn that can compare pic2pic is sufficient
             metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
 
             if data_loader == data_loader_train:
