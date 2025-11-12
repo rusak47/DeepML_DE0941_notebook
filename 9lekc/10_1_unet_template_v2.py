@@ -109,15 +109,55 @@ class ResBlock(torch.nn.Module):
         out = self.gn2(out)
         return out
 
-
 class UNetConcat(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        # TODO: implement UNet with concatenation skip connections
+        self.maxpool = torch.nn.MaxPool2d(kernel_size=2, stride=2)
+        self.upsample = torch.nn.Upsample(scale_factor=2, mode='bilinear')
+
+        self.conv_down_1 = ResBlock(3, 8)
+        self.conv_down_2 = ResBlock(8, 16)
+        self.conv_down_3 = ResBlock(16, 32)
+        self.conv_down_4 = ResBlock(32, 64)
+
+        self.conv_middle = ResBlock(64, 64)
+
+        self.conv_up_4 = ResBlock(64 + 64, 32)
+        self.conv_up_3 = ResBlock(32 + 32, 16)
+        self.conv_up_2 = ResBlock(16 + 16, 8)
+        self.conv_up_1 = ResBlock(8 + 8, 1)
 
     def forward(self, x):
-        # TODO: implement UNet with concatenation skip connections
-        return x
+        skip_1 = self.conv_down_1.forward(x)
+        out = self.maxpool.forward(skip_1)
+
+        skip_2 = self.conv_down_2.forward(out)
+        out = self.maxpool.forward(skip_2)
+
+        skip_3 = self.conv_down_3.forward(out)
+        out = self.maxpool.forward(skip_3)
+
+        skip_4 = self.conv_down_4.forward(out)
+        out = self.conv_middle.forward(skip_4)
+
+        out = self.conv_middle.forward(skip_4)
+
+        out = torch.cat([out, skip_4], dim=1)
+        out = self.conv_up_4.forward(out)
+        out = self.upsample.forward(out)
+
+        out = torch.cat([out, skip_3], dim=1)
+        out = self.conv_up_3.forward(out)
+        out = self.upsample.forward(out)
+
+        out = torch.cat([out, skip_2], dim=1)
+        out = self.conv_up_2.forward(out)
+        out = self.upsample.forward(out)
+
+        out = torch.cat([out, skip_1], dim=1)
+        out = self.conv_up_1.forward(out)
+
+        return torch.sigmoid(out)
 
 
 class UNetAdd(torch.nn.Module):
@@ -135,7 +175,12 @@ def dice_coeficient(predict, target):
 
 
 def bce_loss(predict, target, weight=1):
-    return 0
+    predict = predict.view(target.size(0), -1)
+    target = target.view(target.size(0), -1)
+    loss = -torch.mean(
+        weight * target * torch.log(predict +1e-10) + weight * (1.0 - target) * torch.log(1.0- predict +1e-10)
+    )
+    return loss
 
 
 def combined_loss(predict, target):
@@ -182,14 +227,14 @@ for epoch in range(1, 100):
 
             y_prim = model.forward(x)
             loss_bce = bce_loss(y_prim, y)
-            dice_coef = dice_coeficient(y_prim, y)
-            iou_coef = iou_coeficient(y_prim, y)
+            #dice_coef = dice_coeficient(y_prim, y)
+            #iou_coef = iou_coeficient(y_prim, y)
 
             # TODO
-            loss = 0
+            loss = bce_loss(y_prim, y)
             metrics_epoch[f'{stage}_loss'].append(loss.item())
-            metrics_epoch[f'{stage}_dice_coef'].append(dice_coef.item())
-            metrics_epoch[f'{stage}_IoU'].append(iou_coeficient(y_prim, y).item())
+            #metrics_epoch[f'{stage}_dice_coef'].append(dice_coef.item())
+            #metrics_epoch[f'{stage}_IoU'].append(iou_coeficient(y_prim, y).item())
 
             if data_loader == data_loader_train:
                 loss.backward()
