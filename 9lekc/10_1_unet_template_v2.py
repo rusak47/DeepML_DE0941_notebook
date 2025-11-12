@@ -163,11 +163,54 @@ class UNetConcat(torch.nn.Module):
 class UNetAdd(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        # TODO: implement UNet with addition skip connections
+        self.maxpool = torch.nn.MaxPool2d(kernel_size=2, stride=2)
+        self.upsample = torch.nn.Upsample(scale_factor=2, mode='bilinear')
+
+        self.conv_down_1 = ResBlock(3, 8)
+        self.conv_down_2 = ResBlock(8, 16)
+        self.conv_down_3 = ResBlock(16, 32)
+        self.conv_down_4 = ResBlock(32, 64)
+
+        self.conv_middle = ResBlock(64, 64)
+
+        self.conv_up_4 = ResBlock(64, 32)
+        self.conv_up_3 = ResBlock(32, 16)
+        self.conv_up_2 = ResBlock(16, 8)
+        self.conv_up_1 = ResBlock(8, 1)
 
     def forward(self, x):
-        #TODO: implement UNet with addition skip connections
+        skip_1 = self.conv_down_1.forward(x)
+        out = self.maxpool.forward(skip_1)
+
+        skip_2 = self.conv_down_2.forward(out)
+        out = self.maxpool.forward(skip_2)
+
+        skip_3 = self.conv_down_3.forward(out)
+        out = self.maxpool.forward(skip_3)
+
+        skip_4 = self.conv_down_4.forward(out)
+        out = self.conv_middle.forward(skip_4)
+
+        out = self.conv_middle.forward(skip_4)
+
+        out = out+ skip_4
+        out = self.conv_up_4.forward(out)
+        out = self.upsample.forward(out)
+
+        out = out+ skip_3
+        out = self.conv_up_3.forward(out)
+        out = self.upsample.forward(out)
+
+        out = out+ skip_2
+        out = self.conv_up_2.forward(out)
+        out = self.upsample.forward(out)
+
+        out = out+ skip_1
+        out = self.conv_up_1.forward(out)
+
         return torch.sigmoid(out)
+
+
 
 
 def dice_coeficient(predict, target):
@@ -191,7 +234,8 @@ def iou_coeficient(predict, target):
     return 0
 
 
-model = UNetConcat()
+#model = UNetConcat()
+model = UNetAdd()
 optimizer = torch.optim.RAdam(model.parameters(), lr=LR)
 
 if USE_CUDA:
