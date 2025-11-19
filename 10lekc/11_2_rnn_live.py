@@ -61,9 +61,21 @@ class Dataset(torch.utils.data.Dataset):
         return len(self.final_quotes_sentences)
 
     def __getitem__(self, idx):
-        x_raw = np.array(self.final_quotes_sentences[idx], dtype=np.int64)
+        x_raw = np.array(self.final_quotes_sentences[idx], dtype=np.int64) # A, B, C, D
+
+        # x - to be prepared is half the victory (A,B,C)
+        # y - be prepared is half the victory (B, C, D)
+        y = np.roll(x_raw, -1) # [1,2,3,4] =becomes> [2,3,4,1]
+        y = y[:-1] # cut last
+        x = x_raw[:-1] # [1,2,3]
+
+        x_len = len(x)
+        pad_right = self.max_sentence_length - x_len
+        x_padded = np.pad(x, (0, pad_right))
+        y_padded = np.pad(x, (0, pad_right))
+
         # TODO
-        return x_padded, y_padded, x_length
+        return x_padded, y_padded, x_len
 
 dataset_full = Dataset()
 
@@ -77,13 +89,16 @@ dataset_train, dataset_test = torch.utils.data.random_split(
 dataloader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    drop_last=(len(dataset_train) % BATCH_SIZE == 1)
+    drop_last=(len(dataset_train) % BATCH_SIZE == 1), ## its important to drop last if 1 batch norm will fail because cant count  mean and sigma for one sample
+    shuffle=True
 )
 
 dataloader_test = torch.utils.data.DataLoader(
     dataset=dataset_test,
     batch_size=BATCH_SIZE,
-    drop_last=(len(dataset_test) % BATCH_SIZE == 1)
+    drop_last=(len(dataset_test) % BATCH_SIZE == 1),
+    shuffle=False
+
 )
 
 
@@ -91,11 +106,46 @@ class RNN(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #TODO
+        #h_t = tahn(W @ h_<t-1> + U@x_t + b)
+        # o_t = V @ h_t + b_o
+        #parameter is simple matrix
+        self.W = torch.nn.Linear( # allows to call forwards pass directly
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            #torch.FloatTensor(RNN_HIDDEN_SIZE, RNN_HIDDEN_SIZE), bias=False
+        )
+        self.U = torch.nn.Linear(
+            in_features=EMBEDDING_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            #torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
+        )
+        self.V = torch.nn.Linear(
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=len(dataset_full.vocabulary_keys)
+            #torch.FloatTensor(RNN_HIDDEN_SIZE, len(dataset_full.vocabulary_keys))
+        )
 
     def forward(self, x: PackedSequence, hidden=None):
+        x_unpacked, x_len = pad_packed_sequence(x, batch_first=True) # True <- makes longest sentence first (safety switch)
+        if hidden is None:
+            hidden = torch.zeros(x_unpacked.size(0), RNN_HIDDEN_SIZE).to(DEVICE) # why its a bad idea to put into default parameter - its a pointer that points to heap
+                                                                                # fn used globally will work with defaut value
 
-        #TODO
+        # x_unpacked B, Seq, F
+        x_seq = x_unpacked.permute(1,0,2)
+        outs = []
+        for x_t in x_seq: # (B,F)
+            W_dot_x = self.W.forward(hidden)
+            U_dot_x = self.U.forward(x_t)
+            hidden = torch.tanh_((W_dot_x + U_dot_x))
+            out = self.V.forward(hidden)
+            outs.append(out)
+
+        out_seq = torch.stack(outs)
+
+        out_seq = out_seq.permute(1,0,2) # Seq, B, F -> B. Seq, F
+
+        output = pack_padded_sequence(out_seq, x_len, batch_first=True, enforce_sorted=False)
 
         return output, hidden
 
@@ -103,12 +153,32 @@ class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #TODO
+        #embeds
+        self.emb = torch.nn.Embedding(
+            num_embeddings= len(dataset_full.vocabulary_keys),
+            embedding_dim=EMBEDDING_SIZE
+        )
+
+        self.rnn = RNN()
 
     def forward(self, x: PackedSequence, hidden=None):
+        # B,Seq, 1 -> B, Seq, Emb
+        x_emb = self.emb.forward(x.data) # x.dat is the sousage of all sentences (packedsequenceofsentences)
+        x_emb_packed = PackedSequence(
+            data=x_emb,
+            batch_sizes=x.batch_sizes,
+            sorted_indices=x.sorted_indices
+        )
 
-        #TODO
+        out, hidden =  self.rnn.forward(x_emb_packed,hidden)
+        y_prim = torch.softmax(out.data, dim=-1) # sousage probabs of words
 
+        y_prim_packed = PackedSequence(
+            data = y_prim,
+            # tokens where we need to cut the sousage
+            batch_sizes=x.batch_sizes,
+            sorted_indices=x.sorted_indices
+        )
         return y_prim_packed, hidden
 
 
@@ -120,7 +190,8 @@ optimizer = torch.optim.Adam(
     lr=LEARNING_RATE
 )
 
-loss_weights = 0 #TODO
+loss_weights = torch.FloatTensor( 1./ np.array((dataset_full.vocabulary_counts))) # inverse a/counts, a - multiplier to increase
+# instead dataset_full, should be dataset_train
 loss_weights = loss_weights.to(DEVICE)
 
 loss_plot_train = []
@@ -141,18 +212,19 @@ for epoch in range(1, 1000):
             x_padded = x_padded.to(DEVICE)
             y_padded = y_padded.to(DEVICE)
 
-            x_packed = 0 #TODO
-            y_packed = 0 #TODO
+            x_packed = pack_padded_sequence(x_padded, x_length, batch_first=True, enforce_sorted=False)
+            y_packed = pack_padded_sequence(y_padded, x_length, batch_first=True, enforce_sorted=False)
 
             y_prim_packed, _ = model.forward(x_packed)
 
             idxes_batch = range(len(y_packed.data))
             idxes_y = y_packed.data
-            loss = 0 #TODO
+            #L_cce = -y*log(y') = -log(y'_<y_idx>) < doing cross entropy for the specific y_idx
+            loss = -torch.mean(loss_weights[idxes_y] * torch.log(y_prim_packed.data[idxes_batch, idxes_y] + 1e-8))
             losses.append(loss.cpu().item())
 
             idxes_y_prim = y_prim_packed.data.argmax(dim=-1)
-            acc = 0 #TODO
+            acc = torch.mean((idxes_y_prim == idxes_y) * 1.0)
             accs.append(acc.cpu().item())
 
             if dataloader == dataloader_train:
@@ -196,6 +268,7 @@ for epoch in range(1, 1000):
         plt.draw()
         plt.pause(0.1)
 
+        # rollout code - text generator
         x_roll = x_padded[:, :1]
         hidden = None
         batch_size = x_roll.size(0)
