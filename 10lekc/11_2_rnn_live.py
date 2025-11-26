@@ -13,7 +13,7 @@ import json
 
 from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence, pad_packed_sequence
 
-plt.rcParams["figure.figsize"] = (10, 16) # size of window
+plt.rcParams["figure.figsize"] = (10, 16)  # size of window
 plt.style.use('dark_background')
 
 LEARNING_RATE = 1e-3
@@ -26,7 +26,7 @@ RNN_IS_BIDIRECTIONAL = False
 
 TRAIN_TEST_SPLIT = 0.8
 
-MAX_LEN = 200 # limit max number of samples otherwise too slow training (on GPU use all samples / for final training)
+MAX_LEN = 200  # limit max number of samples otherwise too slow training (on GPU use all samples / for final training)
 DEVICE = 'cpu'
 
 if torch.cuda.is_available():
@@ -34,6 +34,8 @@ if torch.cuda.is_available():
     # comment out this next line if you have nvidia GPU and you want to debug
     MAX_LEN = None
     pass
+
+print(f"maxlen: {MAX_LEN}; device: {DEVICE}")
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -61,13 +63,13 @@ class Dataset(torch.utils.data.Dataset):
         return len(self.final_quotes_sentences)
 
     def __getitem__(self, idx):
-        x_raw = np.array(self.final_quotes_sentences[idx], dtype=np.int64) # A, B, C, D
+        x_raw = np.array(self.final_quotes_sentences[idx], dtype=np.int64)  # A, B, C, D
 
         # x - to be prepared is half the victory (A,B,C)
         # y - be prepared is half the victory (B, C, D)
-        y = np.roll(x_raw, -1) # [1,2,3,4] =becomes> [2,3,4,1]
-        y = y[:-1] # cut last
-        x = x_raw[:-1] # [1,2,3]
+        y = np.roll(x_raw, -1)  # [1,2,3,4] =becomes> [2,3,4,1]
+        y = y[:-1]  # cut last
+        x = x_raw[:-1]  # [1,2,3]
 
         x_len = len(x)
         pad_right = self.max_sentence_length - x_len
@@ -76,6 +78,7 @@ class Dataset(torch.utils.data.Dataset):
 
         # TODO
         return x_padded, y_padded, x_len
+
 
 dataset_full = Dataset()
 
@@ -89,7 +92,8 @@ dataset_train, dataset_test = torch.utils.data.random_split(
 dataloader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    drop_last=(len(dataset_train) % BATCH_SIZE == 1), ## its important to drop last if 1 batch norm will fail because cant count  mean and sigma for one sample
+    drop_last=(len(dataset_train) % BATCH_SIZE == 1),
+    ## its important to drop last if 1 batch norm will fail because cant count  mean and sigma for one sample
     shuffle=True
 )
 
@@ -102,79 +106,153 @@ dataloader_test = torch.utils.data.DataLoader(
 )
 
 
-class RNN(torch.nn.Module):
+class GRU(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #h_t = tahn(W @ h_<t-1> + U@x_t + b)
-        # o_t = V @ h_t + b_o
-        #parameter is simple matrix
-        self.W = torch.nn.Linear( # allows to call forwards pass directly
-            in_features=RNN_HIDDEN_SIZE,
-            out_features=RNN_HIDDEN_SIZE
-            #torch.FloatTensor(RNN_HIDDEN_SIZE, RNN_HIDDEN_SIZE), bias=False
-        )
-        self.U = torch.nn.Linear(
+        self.W_r = torch.nn.Linear(  # allows to call forwards pass directly
             in_features=EMBEDDING_SIZE,
             out_features=RNN_HIDDEN_SIZE
-            #torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
+            # torch.FloatTensor(RNN_HIDDEN_SIZE, RNN_HIDDEN_SIZE), bias=False
         )
+        self.U_r = torch.nn.Linear(
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
+        )
+        self.W_z = torch.nn.Linear(  # allows to call forwards pass directly
+            in_features=EMBEDDING_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(RNN_HIDDEN_SIZE, RNN_HIDDEN_SIZE), bias=False
+        )
+        self.U_z = torch.nn.Linear(
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
+        )
+
+        self.W_h = torch.nn.Linear(  # allows to call forwards pass directly
+            in_features=EMBEDDING_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(RNN_HIDDEN_SIZE, RNN_HIDDEN_SIZE), bias=False
+        )
+        self.U_h = torch.nn.Linear(
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
+        )
+
         self.V = torch.nn.Linear(
             in_features=RNN_HIDDEN_SIZE,
             out_features=len(dataset_full.vocabulary_keys)
-            #torch.FloatTensor(RNN_HIDDEN_SIZE, len(dataset_full.vocabulary_keys))
+            # torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
         )
 
     def forward(self, x: PackedSequence, hidden=None):
-        x_unpacked, x_len = pad_packed_sequence(x, batch_first=True) # True <- makes longest sentence first (safety switch)
+        x_unpacked, x_len = pad_packed_sequence(x,
+                                                batch_first=True)  # True <- makes longest sentence first (safety switch)
         if hidden is None:
-            hidden = torch.zeros(x_unpacked.size(0), RNN_HIDDEN_SIZE).to(DEVICE) # why its a bad idea to put into default parameter - its a pointer that points to heap
-                                                                                # fn used globally will work with defaut value
+            hidden = torch.zeros(x_unpacked.size(0), RNN_HIDDEN_SIZE).to(
+                DEVICE)  # why its a bad idea to put into default parameter - its a pointer that points to heap
+            # fn used globally will work with defaut value
 
         # x_unpacked B, Seq, F
-        x_seq = x_unpacked.permute(1,0,2)
+        x_seq = x_unpacked.permute(1, 0, 2)
         outs = []
-        for x_t in x_seq: # (B,F)
-            W_dot_x = self.W.forward(hidden)
-            U_dot_x = self.U.forward(x_t)
-            hidden = torch.tanh_((W_dot_x + U_dot_x))
-            out = self.V.forward(hidden)
-            outs.append(out)
+        for x_t in x_seq:  # (B,F)
+            r_t = torch.sigmoid(self.W_r.forward(x_t) + self.U_r.forward(hidden))
+            z_t = torch.sigmoid(self.W_z.forward(x_t) + self.U_z.forward(hidden))
+            h_t_pri = torch.tanh(self.W_h.forward(x_t) + self.U_h.forward(r_t * hidden))
+            h_t = (1 - z_t) * hidden + z_t * h_t_pri
 
+            out = self.V.forward(h_t)
+            outs.append(out)
         out_seq = torch.stack(outs)
 
-        out_seq = out_seq.permute(1,0,2) # Seq, B, F -> B. Seq, F
+        out_seq = out_seq.permute(1, 0, 2)  # Seq, B, F -> B. Seq, F
 
         output = pack_padded_sequence(out_seq, x_len, batch_first=True, enforce_sorted=False)
 
         return output, hidden
 
+
+class RNN(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # h_t = tahn(W @ h_<t-1> + U@x_t + b)
+        # o_t = V @ h_t + b_o
+        # parameter is simple matrix
+        self.W = torch.nn.Linear(  # allows to call forwards pass directly
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(RNN_HIDDEN_SIZE, RNN_HIDDEN_SIZE), bias=False
+        )
+        self.U = torch.nn.Linear(
+            in_features=EMBEDDING_SIZE,
+            out_features=RNN_HIDDEN_SIZE
+            # torch.FloatTensor(EMBEDDING_SIZE, RNN_HIDDEN_SIZE)
+        )
+        self.V = torch.nn.Linear(
+            in_features=RNN_HIDDEN_SIZE,
+            out_features=len(dataset_full.vocabulary_keys)
+            # torch.FloatTensor(RNN_HIDDEN_SIZE, len(dataset_full.vocabulary_keys))
+        )
+
+    def forward(self, x: PackedSequence, hidden=None):
+        x_unpacked, x_len = pad_packed_sequence(x,
+                                                batch_first=True)  # True <- makes longest sentence first (safety switch)
+        if hidden is None:
+            hidden = torch.zeros(x_unpacked.size(0), RNN_HIDDEN_SIZE).to(
+                DEVICE)  # why its a bad idea to put into default parameter - its a pointer that points to heap
+            # fn used globally will work with defaut value
+
+        # x_unpacked B, Seq, F
+        x_seq = x_unpacked.permute(1, 0, 2)
+        outs = []
+        for x_t in x_seq:  # (B,F)
+            W_dot_x = self.W.forward(hidden)
+            U_dot_x = self.U.forward(x_t)
+            hidden = torch.tanh(W_dot_x + U_dot_x)
+            out = self.V.forward(hidden)
+            outs.append(out)
+
+        out_seq = torch.stack(outs)
+
+        out_seq = out_seq.permute(1, 0, 2)  # Seq, B, F -> B. Seq, F
+
+        output = pack_padded_sequence(out_seq, x_len, batch_first=True, enforce_sorted=False)
+
+        return output, hidden
+
+
 class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #embeds
+        # embeds
         self.emb = torch.nn.Embedding(
-            num_embeddings= len(dataset_full.vocabulary_keys),
+            num_embeddings=len(dataset_full.vocabulary_keys),
             embedding_dim=EMBEDDING_SIZE
         )
 
+        #self.rnn = GRU()  # RNN()
         self.rnn = RNN()
 
     def forward(self, x: PackedSequence, hidden=None):
         # B,Seq, 1 -> B, Seq, Emb
-        x_emb = self.emb.forward(x.data) # x.dat is the sousage of all sentences (packedsequenceofsentences)
+        x_emb = self.emb.forward(x.data)  # x.dat is the sousage of all sentences (packedsequenceofsentences)
         x_emb_packed = PackedSequence(
             data=x_emb,
             batch_sizes=x.batch_sizes,
             sorted_indices=x.sorted_indices
         )
 
-        out, hidden =  self.rnn.forward(x_emb_packed,hidden)
-        y_prim = torch.softmax(out.data, dim=-1) # sousage probabs of words
+        out, hidden = self.rnn.forward(x_emb_packed, hidden)
+        y_prim = torch.softmax(out.data, dim=-1)  # sousage probabs of words
 
         y_prim_packed = PackedSequence(
-            data = y_prim,
+            data=y_prim,
             # tokens where we need to cut the sousage
             batch_sizes=x.batch_sizes,
             sorted_indices=x.sorted_indices
@@ -190,7 +268,8 @@ optimizer = torch.optim.Adam(
     lr=LEARNING_RATE
 )
 
-loss_weights = torch.FloatTensor( 1./ np.array((dataset_full.vocabulary_counts))) # inverse a/counts, a - multiplier to increase
+loss_weights = torch.FloatTensor(
+    1. / np.array((dataset_full.vocabulary_counts)))  # inverse a/counts, a - multiplier to increase
 # instead dataset_full, should be dataset_train
 loss_weights = loss_weights.to(DEVICE)
 
@@ -199,7 +278,7 @@ loss_plot_test = []
 acc_plot_train = []
 acc_plot_test = []
 
-fig, (ax1, ay1) = plt.subplots(2,1)
+fig, (ax1, ay1) = plt.subplots(2, 1)
 plt.ion()
 
 for epoch in range(1, 1000):
@@ -219,7 +298,7 @@ for epoch in range(1, 1000):
 
             idxes_batch = range(len(y_packed.data))
             idxes_y = y_packed.data
-            #L_cce = -y*log(y') = -log(y'_<y_idx>) < doing cross entropy for the specific y_idx
+            # L_cce = -y*log(y') = -log(y'_<y_idx>) < doing cross entropy for the specific y_idx
             loss = -torch.mean(loss_weights[idxes_y] * torch.log(y_prim_packed.data[idxes_batch, idxes_y] + 1e-8))
             losses.append(loss.cpu().item())
 
@@ -255,7 +334,6 @@ for epoch in range(1, 1000):
         ax2 = ax1.twinx()
         ax2.plot(loss_plot_test, 'c-', label='loss test')
         ax2.legend(loc='upper left')
-
 
         ay1.plot(acc_plot_train, 'r-', label='acc train')
         ay1.legend()
