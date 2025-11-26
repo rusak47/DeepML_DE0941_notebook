@@ -6,6 +6,7 @@ import pickle
 import imageio #pip3 install imageio
 import torch
 import numpy as np
+from torch.onnx.ops import attention
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torch.nn.utils.rnn import pad_packed_sequence, PackedSequence, pack_padded_sequence
@@ -36,7 +37,7 @@ run_name = args.run_name
 TRANSFORMER_HEADS = 4
 
 DEVICE = 'cpu'
-if torch.cuda.is_available():
+if False and torch.cuda.is_available():
     DEVICE = 'cuda'
 
 MIN_SENTENCE_LEN = 3
@@ -111,8 +112,14 @@ class PositionalEncoding(torch.nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
         super().__init__()
 
-        #TODO
-        self.pe = None
+        pe = torch.zeros(num_embeddings, embedding_dim)
+        position = torch.arange(0, num_embeddings, dtype=torch.float).unsqueeze(1).to(DEVICE)
+        div_term = torch.exp(torch.arange(0, embedding_dim, 2).float() * (-np.log(10_000)/embedding_dim)).to(DEVICE)
+        # sinusoidal way of representing data  -- visual way of creating embedding without learning it
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.pe = pe
+        #debug into-> plt.imgshow(pe.detach().cpu().numpy()); plt.show()
 
     def forward(self, idxes):
         return self.pe[idxes, :]
@@ -122,13 +129,51 @@ class TransformerLayer(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #TODO
+        self.project_k = torch.nn.Linear(  in_features=HIDDEN_SIZE, out_features=HIDDEN_SIZE )
+        self.project_q = torch.nn.Linear(  in_features=HIDDEN_SIZE, out_features=HIDDEN_SIZE )
+        self.project_v = torch.nn.Linear(  in_features=HIDDEN_SIZE, out_features=HIDDEN_SIZE )
+
+        self.ff = torch.nn.Sequential(
+            torch.nn.Linear( in_features=HIDDEN_SIZE, out_features=HIDDEN_SIZE ),
+            torch.nn.GELU(),
+            torch.nn.Linear(in_features=HIDDEN_SIZE, out_features=HIDDEN_SIZE)
+        )
+
+        self.norm1 = torch.nn.LayerNorm(normalized_shape=HIDDEN_SIZE)
+        self.norm2 = torch.nn.LayerNorm(normalized_shape=HIDDEN_SIZE)
 
     def forward(self, x, lengths, atten):
         batch_size = x.size(0) # x.shape (B, seq, HIDDEN_SIZE)
         seq_size = x.size(1)
 
-        #TODO
+        k = self.project_k.forward(x)
+        q = self.project_q.forward(x)
+        v = self.project_v.forward(x)
+
+        att_raw = q @ k.transpose(-1,-2) / np.sqrt(x.size(-1))
+
+        mask = torch.tril(torch.ones(seq_size, seq_size)).to(DEVICE) # cut lower part of matrix - necessary only for prediction tasks;
+                                                                    # translation sees the whole context to
+
+        trick = float('-inf') # a  trick for softmax to not consider those values at all
+        attention_mask = att_raw.masked_fill(mask==0, value=trick) # replace small e ; why? (B, seq, seq)
+
+        for idx, length in enumerate(lengths): # ensure that model trains only on the important parts
+            attention_mask[idx, :, length:] = trick
+            attention_mask[idx, length:, :] = trick
+
+        atten =  torch.softmax(attention_mask, dim=-1)
+
+        atten = atten.masked_fill((atten > 0) == False, value=0.0) # another trick to hide zeroes, which comes next
+        out = atten @ v
+
+        out_1 = x+torch.dropout(out, p=DROPOUT, train=self.training) # randomly drops some entries from attention matrix,
+                                                                    # not to learn identical sequence, force it  to adapt to changes
+        #final norm steps                                           # when inference we dont do that to not lose the context: P and train are the flags for switching mode
+        out_1_norm = self.norm1.forward(out_1)
+        out_2 = self.ff.forward(out_1_norm)
+        out_3 = out_1_norm + out_2
+        y_prim = self.norm2.forward(out_3)
 
         return y_prim, lengths, atten
 
@@ -137,13 +182,57 @@ class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #TODO
+        self.project_w_e = torch.nn.Embedding(
+            num_embeddings=len(dataset_full.vocabulary_keys), # the amount model can predict i.e. tokens
+            embedding_dim=HIDDEN_SIZE # hidden size
+        )
+
+        self.project_p_e = PositionalEncoding(
+            num_embeddings=dataset_full.max_sentence_length, #hardware dependant
+            embedding_dim=HIDDEN_SIZE
+        )
+
+        self.transformer = torch.nn.ModuleList( #sequential - cant debug into; module list allows iterating over
+            [
+                TransformerLayer() for _ in range(TRANSFORMER_LAYERS)
+            ]
+        )
+
+        self.fc = torch.nn.Linear(in_features=HIDDEN_SIZE, out_features=HIDDEN_SIZE)
 
     def forward(self, x: PackedSequence):
 
         #TODO
+        x_e = PackedSequence(
+            data = self.project_w_e.forward(x.data),
+            batch_sizes=x.batch_sizes,
+            sorted_indices=x.sorted_indices,
+        )
+        x_e_unpacked, lengths = pad_packed_sequence(x_e, batch_first=True) # batch, seq_length, hidd_length
+                                                                            # decrease the size of input by stacking, and removing zeroes; ~50% savings
 
-        return y_prim_packed, atten
+        pos_idx = torch.arange(0, torch.max(lengths)).to(DEVICE) # size of specific batch
+        p_e = self.project_p_e.forward(pos_idx)
+        p_e = p_e.unsqueeze(dim=0)
+        p_e = p_e.expand(x_e_unpacked.size()) # return to initial dimensions
+
+        z= x_e_unpacked+ p_e # x*W_e + W_p
+
+        atten = None
+        for layer in self.transformer:
+            z, lengths, atten = layer.forward(z, lengths, atten)
+
+        z_packed  = pack_padded_sequence(z, lengths, batch_first=True, enforce_sorted=False) # pack to be consisten as it wasnt
+        out_fc =  self.fc.forward(z_packed.data)
+
+        y_prim_logits = (self.project_w_e.weight @ out_fc.unsqueeze(dim=-1)).squeeze(dim=-1) # transposed embedding step
+        y_prim= torch.softmax(y_prim_logits, dim=-1)
+        y_prim_packed = PackedSequence(
+            data=y_prim,
+            batch_sizes=x.batch_sizes,
+            sorted_indices=x.sorted_indices
+        )
+        return y_prim_packed, atten # the atten matrix after processing is not used unlike RNNs; here we return just for visualization
 
 model = Model()
 model = model.to(DEVICE)
