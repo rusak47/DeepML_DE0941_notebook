@@ -150,6 +150,15 @@ class TransformerLayer(torch.nn.Module):
         q = self.project_q.forward(x)
         v = self.project_v.forward(x)
 
+        # split the hidden size: add extta dim
+        k = k.view(batch_size, seq_size, TRANSFORMER_HEADS, int(HIDDEN_SIZE/TRANSFORMER_HEADS))
+        q = q.view(batch_size, seq_size, TRANSFORMER_HEADS, int(HIDDEN_SIZE/TRANSFORMER_HEADS))
+        v = v.view(batch_size, seq_size, TRANSFORMER_HEADS, int(HIDDEN_SIZE/TRANSFORMER_HEADS))
+
+        k = k.transpose(1,2)
+        q = q.transpose(1,2)
+        v = v.transpose(1,2)
+
         att_raw = q @ k.transpose(-1,-2) / np.sqrt(x.size(-1))
 
         mask = torch.tril(torch.ones(seq_size, seq_size)).to(DEVICE) # cut lower part of matrix - necessary only for prediction tasks;
@@ -166,6 +175,11 @@ class TransformerLayer(torch.nn.Module):
 
         atten = atten.masked_fill((atten > 0) == False, value=0.0) # another trick to hide zeroes, which comes next
         out = atten @ v
+
+        put = out.transpose(1,2)
+        out = out.contiguous().view(batch_size, seq_size, HIDDEN_SIZE) # restore splitted head into one (recombine) will be exactly the same  as single-head
+
+        atten, _ = torch.max(atten, dim=-1) # take max over head dim; pick one for visualization
 
         out_1 = x+torch.dropout(out, p=DROPOUT, train=self.training) # randomly drops some entries from attention matrix,
                                                                     # not to learn identical sequence, force it  to adapt to changes
@@ -301,8 +315,9 @@ for epoch in range(1, EPOCHS+1):
         model = model.to(DEVICE)
 
         # pip install imageio
-        imageio.imwrite(f'./results/{run_name}-epoch-{epoch}-atten-0.png', atten[0].cpu().data.numpy())
-        imageio.imwrite(f'./results/{run_name}-epoch-{epoch}-atten-l.png', atten[-1].cpu().data.numpy())
+        imageio.imwrite( f'./results/{run_name}-epoch-{epoch}-atten-0.png', (atten[0].detach().cpu().numpy() * 255).astype(np.uint8))
+
+        imageio.imwrite( f'./results/{run_name}-epoch-{epoch}-atten-l.png', (atten[-1].detach().cpu().numpy() * 255).astype(np.uint8))
 
 
     print('Examples:')
