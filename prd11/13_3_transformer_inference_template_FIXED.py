@@ -268,6 +268,7 @@ while True:
          - Generating new tokens step-by-step, feeding each predicted token back into the model again.
         It is used for text generation, sequence completion, language modeling, etc.
     """
+    atten = None
     for step in range(max_tokens):
         cur_len = len(x_idxes)
 
@@ -293,14 +294,21 @@ while True:
             print(f"{dataset_full.vocabulary_keys[i]} ", end='') #todo why some words in the middle are changed?
         print(f'{x_idxes}')
 
+    atten = atten[0] # remove batch -> (seq, seq)
 
     """
-        Implement transformer inference to complete sentences by user input
         Implement and train model using torch.nn.TransformerEncoderLayer
-        
-    # todo implement rollout (remember that the transformer has no memory.)
-    # todo implement matplotlib attention matrix
     """
     print('>>> Output >>>>>>>>>>>>>>>>>>>>>')
     print('y_prim: ' + ' '.join(x_list))
+    print(f'{atten}')
+
+    plt.imshow(atten, aspect='auto', colorizer='gray')
+    plt.title('Attention matrix')
+    plt.xlabel('Attention')
+    plt.ylabel('Words')
+    plt.xticks(range(len(x_idxes)), x_list, rotation=35)
+    plt.yticks(range(len(x_idxes)), x_list)
+    plt.colorbar()
+    plt.show()
 
