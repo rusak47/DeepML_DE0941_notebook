@@ -233,7 +233,9 @@ model.load_state_dict(
         map_location='cpu'
     )
 )
-model = model.train() #todo are we going to train it or just test?
+#model = model.train() # in training mode dropout is enabled which causes random neuron disabling
+                        # if enabled for inference then predictions will be unstable
+model = model.eval() #todo train <- fix multiple stopwords
 torch.set_grad_enabled(False)
 
 while True:
