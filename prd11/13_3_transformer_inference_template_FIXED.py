@@ -13,7 +13,6 @@ import torch.utils.data
 import torch.nn.functional as F
 import argparse
 
-
 HIDDEN_SIZE = 64
 TRANSFORMER_LAYERS = 8
 DROPOUT = 0.1
@@ -243,7 +242,7 @@ while True:
 
     is_valid = True
     x_idxes = []
-    for x_each in x_list:
+    for x_each in x_list: # 1. tokenize user input
         if x_each == '\q':
             exit()
         if x_each not in dataset_full.vocabulary_keys:
@@ -255,6 +254,46 @@ while True:
     if not is_valid:
         continue
 
+    ## run inference on user input
+    # 1. tokenize user input
+    # 2. run prediction loop for max_tokens to generate (rollout)
+    # 3. transforms ids to words
+    cur_len = len(x_idxes)
+    max_len = dataset_full.max_sentence_length
+    max_tokens = max_len - cur_len
+    idx_stop = dataset_full.vocabulary_keys.index('[eos]')
+
+    """
+        the rollout process (Rollout = autoregressive generation): 
+         - Generating new tokens step-by-step, feeding each predicted token back into the model again.
+        It is used for text generation, sequence completion, language modeling, etc.
+    """
+    for step in range(max_tokens):
+        cur_len = len(x_idxes)
+
+        #pad input
+        x_padded = np.pad(x_idxes, (0, max_len - cur_len))
+        x_tensor = torch.tensor(x_padded).unsqueeze(0)
+        x_len_tensor = torch.tensor([cur_len])
+
+        x_packed = pack_padded_sequence(x_tensor, x_len_tensor, batch_first=True, enforce_sorted=False)
+
+        y_prim_packed, atten = model.forward(x_packed)
+
+        idxes_y_prim = y_prim_packed.data.argmax(dim=-1)
+
+        if idxes_y_prim[-1] == idx_stop:
+            break
+
+        x_idxes.append(idxes_y_prim[-1])
+        x_list.append(dataset_full.vocabulary_keys[idxes_y_prim[-1]])
+
+        print(f' Step {step}: ')
+        for i in idxes_y_prim:
+            print(f"{dataset_full.vocabulary_keys[i]} ", end='') #todo why some words in the middle are changed?
+        print(f'{x_idxes}')
+
+
     """
         Implement transformer inference to complete sentences by user input
         Implement and train model using torch.nn.TransformerEncoderLayer
@@ -262,6 +301,6 @@ while True:
     # todo implement rollout (remember that the transformer has no memory.)
     # todo implement matplotlib attention matrix
     """
-
+    print('>>> Output >>>>>>>>>>>>>>>>>>>>>')
     print('y_prim: ' + ' '.join(x_list))
 
