@@ -13,12 +13,27 @@ model_embeddings = BGEM3FlagModel(
     'BAAI/bge-m3',
     use_fp16=True,
     return_sparse=False,
-    return_colbert_vecs=False,
+    return_colbert_vecs=False, #
     return_dense=True
 )
 
-os.makedirs(os.path.dirname("./dataset"), exist_ok=True)
-path_dataset = "./dataset/movies_info.csv"
+def path_workaround():
+    ## why this bug hapened!?
+    curdir = os.getcwd()
+    print(f"curdir {curdir}")
+    root = 'data'
+    # if not curdir.endswith('PyCharmMiscProject'):
+    #    rootpath = '../' + root
+    path_dataset = f'{root}/datasets'
+
+    print(f"{path_dataset} exists: {os.path.exists(path_dataset)}")
+    return root, path_dataset
+
+
+root, dataset_path = path_workaround()
+
+os.makedirs(os.path.dirname(dataset_path), exist_ok=True)
+path_dataset = dataset_path+"/movies_info.csv"
 if not os.path.exists(path_dataset):
     # https://www.kaggle.com/datasets/rushildhingra25/movies-info?select=movies_info.csv
     download_url_to_file(
@@ -30,7 +45,7 @@ df_movies = pd.read_csv(path_dataset)
 # columns: original_title, overview, genres (["a", "b"]) 
 
 embs_dense_overviews = []
-path_embeddings = "./dataset/movies_embeddings.pkl"
+path_embeddings = dataset_path+"/movies_embeddings.pkl"
 if not os.path.exists(path_embeddings):
     download_url_to_file(
         "https://share.yellowrobot.xyz/quick/2025-12-10-1B3250CF-D5B8-4E9B-969B-098832E60DB7.pkl",
@@ -57,3 +72,4 @@ else:
 embs_dense_overviews = np.array(embs_dense_overviews)
     
 # TODO
+print("OK")
