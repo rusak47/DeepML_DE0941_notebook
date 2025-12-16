@@ -2,6 +2,8 @@
  rag example: MongoDB + Gemma
  https://huggingface.co/learn/cookbook/en/rag_with_hugging_face_gemma_mongodb
 """
+from pyexpat.errors import messages
+
 from FlagEmbedding import BGEM3FlagModel
 import pandas as pd
 import os
@@ -149,7 +151,7 @@ class Response(BaseModel):
  I. Rietrieval
 """
 # movie_desc=input("Describe the movie you wish to watch")
-movie_desc = "sci-fi movie about smth cool"
+user_input_movie_plot_preference = "sci-fi movie about smth cool"
 """ TODO does used embeder do that?
 Before generating embeddings, I applied several preprocessing techniques to clean and normalize the text. These included:
     Lowercasing
@@ -160,12 +162,18 @@ Before generating embeddings, I applied several preprocessing techniques to clea
 These steps reduce noise and help ensure the embeddings capture the semantic meaning more effectively.
 https://journals-times.com/2025/06/25/rag-retrieval-augmented-generation-and-embedding-part-1/
 """
-movie_desc_emb = model_embeddings.encode(movie_desc)
+
+## negative prompting
+#movie_negative = input("input movie type and plot that should be avoided")
+user_input_movie_info_negative = "Avoid movies focused on politics, elections, or government conspiracies"
+
+movie_desc_emb = model_embeddings.encode(user_input_movie_plot_preference)
 # {dense_vecs, sparse_vecs,colbert_vecs
 movie_desc_emb_dense = movie_desc_emb['dense_vecs']
 
 cos_sim = embs_dense_overviews @ movie_desc_emb_dense  # simplified version of A.B/(||A||*||B||), where ||x|| is the vector length
 
+#closest_idxs = np.array([2,6,8, 12,144]) #one shot data
 closest_idxs = np.argsort(cos_sim)[-5:]  # select x closest entries; closest has hotter value
 # (by default values are sorted ascending, so take from theend
 print(closest_idxs)
@@ -178,7 +186,7 @@ movie_plots = df_movies.iloc[closest_idxs].values  # .iloc = integer-location ba
 
 movie_plot_context = ""
 for i, plot in enumerate(movie_plots):
-    movie_plot_context += f"<movie>{i + 1}. {plot}<movie>\n"
+    movie_plot_context += f"<movie id={i + 1}>{plot}<movie>\n"
 
 print(f">>> Movie plot context: {movie_plot_context}")
 print("<<<" * 10)
@@ -237,14 +245,103 @@ print("<<<" * 10)
     ]
 
 """
+
+MSG_SYS = {
+    'role': 'system',
+    'content': (
+        'You are a movie suggestion assistant. '
+        'Select the best movie based on the user’s preferences. '
+        'Compare the given movie options by their plots and step by step explain why one movie fits better than the others.'
+        
+        '\nRules:'
+        '\n  - Consider the user’s preferences at all times.'
+        '\n  - Do not recommend any movies that fits under specifications in <MOVIES_TO_AVOID>.'
+        
+        '\n<MOVIES_TO_AVOID>: '
+        f' - {user_input_movie_info_negative}'
+        '\n</MOVIES_TO_AVOID>: '
+        
+        '\n<OUTPUT_FORMAT>:'
+        '\n - Respond with only one ID number from this list: 1, 2, 3, 4, 5.'
+        '\n - The chosen ID must represent the movie with the most similar plot and best match.'
+        '\n</OUTPUT_FORMAT>:'
+    )
+}
+
+USER_QUERY_INTRO= (
+        "Compare the movies step by step to determine the best match to the <description>."
+        'Provide your reasoning internally, but output only the final movie ID number.\n'
+    )
+MSG_1SHOT_USER = {
+    'role': 'user',
+    'content': (
+        USER_QUERY_INTRO
+        + f'<description> Something that includes note of dark drama, crime and uncertain outcome. </description>\n'
+        """
+         <movie id=1>['The Godfather Part II'
+         'In the continuing saga of the Corleone crime family, a young Vito Corleone grows up in Sicily and in 1910s New York. In the 1950s, Michael Corleone attempts to expand the family business into Las Vegas, Hollywood and Cuba.'
+         [Drama, Crime]]<movie>
+        <movie id=2>['The Dark Knight'
+         'Batman raises the stakes in his war on crime. With the help of Lt. Jim Gordon and District Attorney Harvey Dent, Batman sets out to dismantle the remaining criminal organizations that plague the streets. The partnership proves to be effective, but they soon find themselves prey to a reign of chaos unleashed by a rising criminal mastermind known to the terrified citizens of Gotham as the Joker.'
+         [Drama, Action, Crime, Thriller]]<movie>
+        <movie id=3>['The Green Mile'
+         'A supernatural tale set on death row in a Southern prison, where gentle giant John Coffey possesses the mysterious power to heal people's ailments. When the cell block's head guard, Paul Edgecomb, recognizes Coffey's miraculous gift, he tries desperately to help stave off the condemned man's execution.'
+         [Fantasy, Drama, Crime]]<movie>
+        <movie id=4>['The Lord of the Rings: The Return of the King'
+         'As armies mass for a final battle that will decide the fate of the world--and powerful, ancient forces of Light and Dark compete to determine the outcome--one member of the Fellowship of the Ring is revealed as the noble heir to the throne of the Kings of Men. Yet, the sole hope for triumph over evil lies with a brave hobbit, Frodo, who, accompanied by his loyal friend Sam and the hideous, wretched Gollum, ventures deep into the very dark heart of Mordor on his seemingly impossible quest to destroy the Ring of Power.'
+         [Adventure, Fantasy, Action]]<movie>
+        <movie id=5>['Vertigo'
+         'A retired San Francisco detective suffering from acrophobia investigates the strange activities of an old friend's wife, all the while becoming dangerously obsessed with her.'
+         [Mystery, Romance, Thriller]]<movie>
+        """
+    )
+}
+MSG_1SHOT_ASSIST = {
+    'role': 'assistant',
+    'content': '{ "best_fitting_movie" : "2"}'
+}
+MSG_2SHOT_USER = {
+    'role': 'user',
+    'content': (
+        USER_QUERY_INTRO
+        + f'<description> sci-fi movie about smth cool </description>\n'
+        """
+         <movie id=1>['Chain Reaction'
+         'At the University of Chicago, a research team that includes brilliant student machinist Eddie Kasalivich experiences a breakthrough: a stable form of fusion that may lead to a waste-free energy source. However, a private company wants to exploit the technology, so Kasalivich and physicist Dr. Lily Sinclair are framed for murder, and the fusion device is stolen. On the run from the FBI, they must recover the technology and exonerate themselves.'
+         [Thriller, Action, Science Fiction]]<movie>
+        <movie id=2>['Grande, grosso e... Verdone' 'A comic movie divided in three episodes.'
+         [Comedy]]<movie>
+        <movie id=3>['Equals'
+         'A futuristic love story set in a world where emotions have been eradicated.'
+         [Drama, Romance, Science Fiction]]<movie>
+        <movie id=4>['Max Steel'
+         'The adventures of teenager Max McGrath and alien companion Steel, who must harness and combine their tremendous new powers to evolve into the turbo-charged superhero Max Steel.'
+         [Action, Adventure, Science Fiction]]<movie>
+        <movie id=5>['The Man with the Golden Gun'
+         Cool government operative James Bond searches for a stolen invention that can turn the sun's heat into a destructive weapon. He soon crosses paths with the menacing Francisco Scaramanga, a hitman so skilled he has a seven-figure working fee. Bond then joins forces with the swimsuit-clad Mary Goodnight, and together they track Scaramanga to a Thai tropical isle hideout where the killer-for-hire lures the slick spy into a deadly maze for a final duel.'
+         [Adventure, Action, Thriller]]<movie>
+        """
+    )
+}
+MSG_2SHOT_ASSIST = {
+    'role': 'assistant',
+    'content': '{ "best_fitting_movie" : "4"}'
+}
 response = ollama.chat(
     model='gemma3:1b',
     messages=[
+        MSG_SYS,
+
+        MSG_1SHOT_USER,
+        MSG_1SHOT_ASSIST,
+
+        MSG_2SHOT_USER,
+        MSG_2SHOT_ASSIST,
+
         {
             'role': 'user',
-            'content': f"choose movie which fit description. \n"
-                       # +'output movie number: 1,2,3,4,5.\n'
-                       + f'<description> {movie_desc} </description>\n'
+            'content': USER_QUERY_INTRO
+                       + f'<description> {user_input_movie_plot_preference} </description>\n'
                        + movie_plot_context
         },
     ]
@@ -354,7 +451,7 @@ response = ollama.chat(
             'role': 'user',
             'content': f"write short recommendation of movie based on preferences. \n"
                        + 'output 3-5 sentences, include movie title.\n'
-                       + f'<description> {movie_desc} </description>\n'
+                       + f'<description> {user_input_movie_plot_preference} </description>\n'
                        + f'<movie_title> {movie_title} </movie_title>\n'
                        + f'<movie_overview> {plot_overview} </movie_overview>\n'
         }
