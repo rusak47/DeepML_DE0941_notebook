@@ -77,9 +77,55 @@ else:  # if prepared movies embeddings failed, then prepare them yourself
         pickle.dump(embs_dense_overviews, f)
 embs_dense_overviews = np.array(embs_dense_overviews)
 
-print("OK")
+# TODO
+""" 
+1) Add an option for users to specify which movie types and plot elements they dislike. 
+Use negative prompting in classification task (for extra safety)
+  or/and disjoint selection of most similar movies that matches disliked movies. (retrieval)
+  
+  > In other words:
+    Find movies similar to what the user dislikes
+    Then exclude those movies (or their neighbors) from the final selection pool
+    (Provide only safe candidates)
 
+2) Add function to classify Genre from first input movie_desc using LLM zero or few-shot methods 
+ and then choose only as candidates generes that match movie description
+   - classification with genere enum as answer <- extract genres available
+     (primary_genre, secondary_genres)
+   - filter candidates:
+        candidates = [
+            movie for movie in all_movies
+            if movie.genre in allowed_genres
+        ]
 
+3) Add specifically designed re-ranker instead of prompt based classifier for choice of best fitting answer 
+https://huggingface.co/Qwen/Qwen3-Reranker-8B
+    A re-ranker model is not a general chat model and not a classifier in the prompt sense.
+    Instead of asking: “Which movie fits best?”
+    You ask the model to score (query, candidate) pairs. 
+    Then you sort by score and pick the top result.
+
+Alternative task: Use Kaggle Recipes Dataset : 64k Dishes to create recepie recommendation system 
+- system should ask what user likes to eat, what user does not like to eat and available ingredients available 
+  - free text prompts. https://www.kaggle.com/datasets/prashantsingh001/recipes-dataset-64k-dishes
+"""
+
+""" top up model
+  Retrieval [context]
+    [All movies]
+    ↓
+    Genre classification (LLM)
+    ↓
+    Disliked-movie filtering
+    ↓
+    Candidate retrieval (top-K)
+    ↓
+    Re-ranker (Qwen3-Reranker-8B)
+    ↓
+    Best movie
+    
+  Generation
+"""
 # https://www.linkedin.com/pulse/structured-output-gemma3-ali-afshar-nadae/
 # provide the exact response format model should return
 class Response(BaseModel):
@@ -173,6 +219,18 @@ print("<<<" * 10)
   https://arxiv.org/pdf/2311.10054
 """
 # ollama.pull('gemma3:2b')
+"""
+    messages = [ 
+      #Decision policy + constraints
+        SYSTEM_MESSAGE, <- introduce system prompt with main instructions, including negative prompting 
+      #Behavioral anchoring
+        SHOT_1_USER,
+        SHOT_1_ASSISTANT,
+      #Instance-specific data
+        FINAL_USER_QUERY
+    ]
+
+"""
 response = ollama.chat(
     model='gemma3:1b',
     messages=[
@@ -185,7 +243,7 @@ response = ollama.chat(
         },
     ]
     , options={'temperature': 0}
-    , format=Response.model_json_schema()
+    , format=Response.model_json_schema() # Syntax + structure enforcement
     , logprobs=True
     , top_logprobs=5
 )
@@ -268,6 +326,10 @@ for each in response.logprobs:
     print('<<<<' * 40)
 
 print(response.message.content)
+
+"""
+    3. Generation
+"""
 response_obj = Response.model_validate_json(response.message.content)
 chosen_movie_idx = int(response_obj.best_fitting_movie)
 
