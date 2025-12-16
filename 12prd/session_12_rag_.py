@@ -82,6 +82,12 @@ embs_dense_overviews = np.array(embs_dense_overviews)
 1) Add an option for users to specify which movie types and plot elements they dislike. 
 Use negative prompting in classification task (for extra safety)
   or/and disjoint selection of most similar movies that matches disliked movies. (retrieval)
+  Ex: I dislike horror and slasher movies
+    I don’t like movies where the plot revolves around time travel.
+    I dislike slow-paced, artsy, or overly philosophical films.
+    Avoid movies focused on politics, elections, or government conspiracies
+    Avoid movies with excessive violence, gore, or torture scenes
+    I dislike stories involving love triangles, cheating, or toxic relationships.
   
   > In other words:
     Find movies similar to what the user dislikes
