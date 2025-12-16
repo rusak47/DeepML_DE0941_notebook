@@ -37,6 +37,19 @@ def path_workaround():
     print(f"{path_dataset} exists: {os.path.exists(path_dataset)}")
     return rootpath, path_dataset
 
+def get_closest_matches(prompt:str, model_embeddings, dataset_embs_dense, return_max, threshold=0.40):
+    embedded = model_embeddings.encode(prompt) # {dense_vecs, sparse_vecs,colbert_vecs
+    emb_dense = embedded['dense_vecs']
+
+    cos_sim = dataset_embs_dense @ emb_dense  # simplified version of A.B/(||A||*||B||), where ||x|| is the vector length
+
+    # closest_idxs = np.array([2,6,8, 12,144]) #one shot data
+    if return_max:
+        return np.argsort(cos_sim)[-return_max:]  # select x closest entries; closest has hotter value
+                                                  # (by default values are sorted ascending, so take from the end
+    else:
+        idx = np.where(cos_sim >= threshold)[0]
+        return np.argsort(cos_sim[idx])
 
 root, dataset_path = path_workaround()
 
@@ -150,8 +163,21 @@ class Response(BaseModel):
 """
  I. Rietrieval
 """
+
+## negative prompting - exclude close negative matches at retrieval part
+#movie_negative = input("input movie type and plot that should be avoided")
+user_input_movie_info_negative = "Avoid movies focused on politics, elections, or government conspiracies"
+closest_user_negative_idxs = get_closest_matches(user_input_movie_info_negative, model_embeddings, embs_dense_overviews, None, threshold=0.4)
+print(f"Negative res: {len(closest_user_negative_idxs)}")
+print("===" * 10)
+mask_negative = np.ones(len(embs_dense_overviews), dtype=bool)
+mask_negative[closest_user_negative_idxs] = False
+
+embs_dense_overviews_masked = embs_dense_overviews[mask_negative]
+
 # movie_desc=input("Describe the movie you wish to watch")
 user_input_movie_plot_preference = "sci-fi movie about smth cool"
+#user_input_movie_plot_preference = "sci-fi movie about "
 """ TODO does used embeder do that?
 Before generating embeddings, I applied several preprocessing techniques to clean and normalize the text. These included:
     Lowercasing
@@ -163,23 +189,11 @@ These steps reduce noise and help ensure the embeddings capture the semantic mea
 https://journals-times.com/2025/06/25/rag-retrieval-augmented-generation-and-embedding-part-1/
 """
 
-## negative prompting
-#movie_negative = input("input movie type and plot that should be avoided")
-user_input_movie_info_negative = "Avoid movies focused on politics, elections, or government conspiracies"
-
-movie_desc_emb = model_embeddings.encode(user_input_movie_plot_preference)
-# {dense_vecs, sparse_vecs,colbert_vecs
-movie_desc_emb_dense = movie_desc_emb['dense_vecs']
-
-cos_sim = embs_dense_overviews @ movie_desc_emb_dense  # simplified version of A.B/(||A||*||B||), where ||x|| is the vector length
-
-#closest_idxs = np.array([2,6,8, 12,144]) #one shot data
-closest_idxs = np.argsort(cos_sim)[-5:]  # select x closest entries; closest has hotter value
-# (by default values are sorted ascending, so take from theend
-print(closest_idxs)
+closest_user_preferences_idxs = get_closest_matches(user_input_movie_plot_preference, model_embeddings, embs_dense_overviews_masked, 5)
+print(closest_user_preferences_idxs)
 print("===" * 10)
 
-movie_plots = df_movies.iloc[closest_idxs].values  # .iloc = integer-location based indexing
+movie_plots = df_movies.iloc[closest_user_preferences_idxs].values  # .iloc = integer-location based indexing
 # .values: Converts the pandas Series into a NumPy array
 #           Index labels and column names are removed
 # print(movie_plots)
@@ -190,6 +204,7 @@ for i, plot in enumerate(movie_plots):
 
 print(f">>> Movie plot context: {movie_plot_context}")
 print("<<<" * 10)
+
 """
  2. Augmentation
   - if you want/need to control the sources of answer, then always provide the facts to base answer on.
@@ -300,23 +315,24 @@ MSG_1SHOT_ASSIST = {
     'role': 'assistant',
     'content': '{ "best_fitting_movie" : "2"}'
 }
+# NB if query matches example, then response may be biased to the value in example
 MSG_2SHOT_USER = {
     'role': 'user',
     'content': (
         USER_QUERY_INTRO
         + f'<description> sci-fi movie about smth cool </description>\n'
         """
-         <movie id=1>['Chain Reaction'
-         'At the University of Chicago, a research team that includes brilliant student machinist Eddie Kasalivich experiences a breakthrough: a stable form of fusion that may lead to a waste-free energy source. However, a private company wants to exploit the technology, so Kasalivich and physicist Dr. Lily Sinclair are framed for murder, and the fusion device is stolen. On the run from the FBI, they must recover the technology and exonerate themselves.'
-         [Thriller, Action, Science Fiction]]<movie>
-        <movie id=2>['Grande, grosso e... Verdone' 'A comic movie divided in three episodes.'
-         [Comedy]]<movie>
-        <movie id=3>['Equals'
-         'A futuristic love story set in a world where emotions have been eradicated.'
-         [Drama, Romance, Science Fiction]]<movie>
-        <movie id=4>['Max Steel'
+        <movie id=1>['Max Steel'
          'The adventures of teenager Max McGrath and alien companion Steel, who must harness and combine their tremendous new powers to evolve into the turbo-charged superhero Max Steel.'
          [Action, Adventure, Science Fiction]]<movie>
+         <movie id=2>['Chain Reaction'
+         'At the University of Chicago, a research team that includes brilliant student machinist Eddie Kasalivich experiences a breakthrough: a stable form of fusion that may lead to a waste-free energy source. However, a private company wants to exploit the technology, so Kasalivich and physicist Dr. Lily Sinclair are framed for murder, and the fusion device is stolen. On the run from the FBI, they must recover the technology and exonerate themselves.'
+         [Thriller, Action, Science Fiction]]<movie>
+        <movie id=3>['Grande, grosso e... Verdone' 'A comic movie divided in three episodes.'
+         [Comedy]]<movie>
+        <movie id=4>['Equals'
+         'A futuristic love story set in a world where emotions have been eradicated.'
+         [Drama, Romance, Science Fiction]]<movie>
         <movie id=5>['The Man with the Golden Gun'
          Cool government operative James Bond searches for a stolen invention that can turn the sun's heat into a destructive weapon. He soon crosses paths with the menacing Francisco Scaramanga, a hitman so skilled he has a seven-figure working fee. Bond then joins forces with the swimsuit-clad Mary Goodnight, and together they track Scaramanga to a Thai tropical isle hideout where the killer-for-hire lures the slick spy into a deadly maze for a final duel.'
          [Adventure, Action, Thriller]]<movie>
@@ -325,7 +341,7 @@ MSG_2SHOT_USER = {
 }
 MSG_2SHOT_ASSIST = {
     'role': 'assistant',
-    'content': '{ "best_fitting_movie" : "4"}'
+    'content': '{ "best_fitting_movie" : "1"}'
 }
 response = ollama.chat(
     model='gemma3:1b',
@@ -436,7 +452,7 @@ print(response.message.content)
 response_obj = Response.model_validate_json(response.message.content)
 chosen_movie_idx = int(response_obj.best_fitting_movie)
 
-chosen_movie_idx_global = closest_idxs[chosen_movie_idx - 1]
+chosen_movie_idx_global = closest_user_preferences_idxs[chosen_movie_idx - 1]
 plot_overview = df_movies.iloc[chosen_movie_idx_global]['overview']
 movie_title = df_movies.iloc[chosen_movie_idx_global]['original_title']
 
@@ -451,6 +467,7 @@ response = ollama.chat(
             'role': 'user',
             'content': f"write short recommendation of movie based on preferences. \n"
                        + 'output 3-5 sentences, include movie title.\n'
+                       #TODO format unstable - use model
                        + f'<description> {user_input_movie_plot_preference} </description>\n'
                        + f'<movie_title> {movie_title} </movie_title>\n'
                        + f'<movie_overview> {plot_overview} </movie_overview>\n'
