@@ -4,6 +4,7 @@
 """
 from pyexpat.errors import messages
 
+import ast # python parsing module: parse string to object in safely manner
 from FlagEmbedding import BGEM3FlagModel
 import pandas as pd
 import os
@@ -92,7 +93,8 @@ else:  # if prepared movies embeddings failed, then prepare them yourself
         pickle.dump(embs_dense_overviews, f)
 embs_dense_overviews = np.array(embs_dense_overviews)
 
-# TODO
+# TODO exclude nan genre
+
 """ 
 1) Add an option for users to specify which movie types and plot elements they dislike. 
 Use negative prompting in classification task (for extra safety)
@@ -110,8 +112,8 @@ Use negative prompting in classification task (for extra safety)
     (Provide only safe candidates)
 
 2) Add function to classify Genre from first input movie_desc using LLM zero or few-shot methods 
- and then choose only as candidates generes that match movie description
-   - classification with genere enum as answer <- extract genres available
+ and then choose only as candidates genres that match movie description
+   - classification with genre enum as answer <- extract genres available
      (primary_genre, secondary_genres)
    - filter candidates:
         candidates = [
@@ -153,7 +155,7 @@ class Response(BaseModel):
     chain_of_thought: str = Field(  # adding this to not thinking model increases accuracy in avg up to 30%
         ...,
         description='Explain step by step how you compared these movies and why some movies would fit better.'
-    ),
+    ) #, <- silent bug
     best_fitting_movie: Literal['1', '2', '3', '4', '5'] = Field(  # limits to specified values
         ...,  # reusing existing field in parent
         description="ID number of most similar movie plot. Answer only with 1,2,3,4,5."  #
@@ -161,8 +163,10 @@ class Response(BaseModel):
 
 
 """
- I. Rietrieval
+ I. Retrieval
 """
+df_movies['genres'] = df_movies['genres'].apply(ast.literal_eval)
+dataset_genres = df_movies['genres'].explode().unique()
 
 ## negative prompting - exclude close negative matches at retrieval part
 #movie_negative = input("input movie type and plot that should be avoided")
@@ -178,6 +182,52 @@ embs_dense_overviews_masked = embs_dense_overviews[mask_negative]
 # movie_desc=input("Describe the movie you wish to watch")
 user_input_movie_plot_preference = "sci-fi movie about smth cool"
 #user_input_movie_plot_preference = "sci-fi movie about "
+
+# classify genre from initial prompt
+class GenreResponse(BaseModel):
+    chain_of_thought: str = Field(  # adding this to not thinking model increases accuracy in avg up to 30%
+        ...,
+        description='Explain step by step how you decided which primary and secondary genres fits best for this movie.'
+    )
+    best_fitting_primary_genre: Literal[
+        'Drama','Crime','History','War','Animation','Family','Fantasy','Action',
+        'Thriller','Comedy','Romance','Music','Adventure','Western',
+        'Science Fiction','Horror','Mystery','TV Movie'] = Field(  # limits to specified values
+        ...,  # reusing existing field in parent
+        description="Single genre that fits best as a primary for this movie. Answer only with one value from list: Drama, Crime, History, War, Animation, Family, Fantasy, Action, Thriller, Comedy, Romance, Music, Adventure, Western, Science Fiction, Horror, Mystery, TV Movie."
+    ) #, <- comma here leads to a silent bug -> Python interprets this field as tuple, not as Model field
+    best_fitting_secondary_genre: List[Literal[
+        'Drama','Crime','History','War','Animation','Family','Fantasy','Action',
+        'Thriller','Comedy','Romance','Music','Adventure','Western',
+        'Science Fiction','Horror','Mystery','TV Movie']] = Field(  # limits to specified values
+        ...,  # reusing existing field in parent
+        description="Secondary genres that completes primary genre for this movie. Answer with 3 values at most, from list: Drama, Crime, History, War, Animation, Family, Fantasy, Action, Thriller, Comedy, Romance, Music, Adventure, Western, Science Fiction, Horror, Mystery, TV Movie."
+    )
+
+USER_QUERY_GENRES= (
+        "Classify the primary and secondary genres step by step for the provided <description>."
+        'Provide your reasoning internally, but output only one best fitting primary genre and if necessary complement it with up to three(3) best fitting secondary genres.\n'
+    )
+response = ollama.chat(
+    model='gemma3:1b',
+    messages=[
+        {
+            'role': 'user',
+            'content': USER_QUERY_GENRES
+                       + f'<description> {user_input_movie_plot_preference} </description>'
+        },
+    ]
+    , options={'temperature': 0}
+    , format=GenreResponse.model_json_schema() # Syntax + structure enforcement
+    , logprobs=True
+    , top_logprobs=5
+)
+
+print(f"identified genres: {response.message.content}")
+print("<<<<<<"*10)
+
+# filter dataset to get only identified genres
+
 """ TODO does used embeder do that?
 Before generating embeddings, I applied several preprocessing techniques to clean and normalize the text. These included:
     Lowercasing
@@ -200,7 +250,7 @@ movie_plots = df_movies.iloc[closest_user_preferences_idxs].values  # .iloc = in
 
 movie_plot_context = ""
 for i, plot in enumerate(movie_plots):
-    movie_plot_context += f"<movie id={i + 1}>{plot}<movie>\n"
+    movie_plot_context += f"<movie id={i + 1} title='{plot[0]}'><plot>{plot[1]}</plot><genres>{plot[2]}</genres></movie>\n"
 
 print(f">>> Movie plot context: {movie_plot_context}")
 print("<<<" * 10)
@@ -293,21 +343,21 @@ MSG_1SHOT_USER = {
         USER_QUERY_INTRO
         + f'<description> Something that includes note of dark drama, crime and uncertain outcome. </description>\n'
         """
-         <movie id=1>['The Godfather Part II'
-         'In the continuing saga of the Corleone crime family, a young Vito Corleone grows up in Sicily and in 1910s New York. In the 1950s, Michael Corleone attempts to expand the family business into Las Vegas, Hollywood and Cuba.'
-         [Drama, Crime]]<movie>
-        <movie id=2>['The Dark Knight'
-         'Batman raises the stakes in his war on crime. With the help of Lt. Jim Gordon and District Attorney Harvey Dent, Batman sets out to dismantle the remaining criminal organizations that plague the streets. The partnership proves to be effective, but they soon find themselves prey to a reign of chaos unleashed by a rising criminal mastermind known to the terrified citizens of Gotham as the Joker.'
-         [Drama, Action, Crime, Thriller]]<movie>
-        <movie id=3>['The Green Mile'
-         'A supernatural tale set on death row in a Southern prison, where gentle giant John Coffey possesses the mysterious power to heal people's ailments. When the cell block's head guard, Paul Edgecomb, recognizes Coffey's miraculous gift, he tries desperately to help stave off the condemned man's execution.'
-         [Fantasy, Drama, Crime]]<movie>
-        <movie id=4>['The Lord of the Rings: The Return of the King'
-         'As armies mass for a final battle that will decide the fate of the world--and powerful, ancient forces of Light and Dark compete to determine the outcome--one member of the Fellowship of the Ring is revealed as the noble heir to the throne of the Kings of Men. Yet, the sole hope for triumph over evil lies with a brave hobbit, Frodo, who, accompanied by his loyal friend Sam and the hideous, wretched Gollum, ventures deep into the very dark heart of Mordor on his seemingly impossible quest to destroy the Ring of Power.'
-         [Adventure, Fantasy, Action]]<movie>
-        <movie id=5>['Vertigo'
-         'A retired San Francisco detective suffering from acrophobia investigates the strange activities of an old friend's wife, all the while becoming dangerously obsessed with her.'
-         [Mystery, Romance, Thriller]]<movie>
+        <movie id=1 title='The Godfather Part II'>
+         <plot>In the continuing saga of the Corleone crime family, a young Vito Corleone grows up in Sicily and in 1910s New York. In the 1950s, Michael Corleone attempts to expand the family business into Las Vegas, Hollywood and Cuba.</plot>
+         <genres>[Drama, Crime]</genres></movie>
+        <movie id=2 title='The Dark Knight'>
+         <plot>Batman raises the stakes in his war on crime. With the help of Lt. Jim Gordon and District Attorney Harvey Dent, Batman sets out to dismantle the remaining criminal organizations that plague the streets. The partnership proves to be effective, but they soon find themselves prey to a reign of chaos unleashed by a rising criminal mastermind known to the terrified citizens of Gotham as the Joker.</plot>
+         <genres>[Drama, Action, Crime, Thriller]</genres></movie>
+        <movie id=3 title='The Green Mile'>
+         <plot>A supernatural tale set on death row in a Southern prison, where gentle giant John Coffey possesses the mysterious power to heal people's ailments. When the cell block's head guard, Paul Edgecomb, recognizes Coffey's miraculous gift, he tries desperately to help stave off the condemned man's execution.</plot>
+         <genres>[Fantasy, Drama, Crime]</genres></movie>
+        <movie id=4 title='The Lord of the Rings: The Return of the King'>
+         <plot>As armies mass for a final battle that will decide the fate of the world--and powerful, ancient forces of Light and Dark compete to determine the outcome--one member of the Fellowship of the Ring is revealed as the noble heir to the throne of the Kings of Men. Yet, the sole hope for triumph over evil lies with a brave hobbit, Frodo, who, accompanied by his loyal friend Sam and the hideous, wretched Gollum, ventures deep into the very dark heart of Mordor on his seemingly impossible quest to destroy the Ring of Power.</plot>
+         <genres>[Adventure, Fantasy, Action]</genres></movie>
+        <movie id=5 title='Vertigo'>
+         <plot>A retired San Francisco detective suffering from acrophobia investigates the strange activities of an old friend's wife, all the while becoming dangerously obsessed with her.</plot>
+         <genres>[Mystery, Romance, Thriller]</genres></movie>
         """
     )
 }
@@ -322,20 +372,21 @@ MSG_2SHOT_USER = {
         USER_QUERY_INTRO
         + f'<description> sci-fi movie about smth cool </description>\n'
         """
-        <movie id=1>['Max Steel'
-         'The adventures of teenager Max McGrath and alien companion Steel, who must harness and combine their tremendous new powers to evolve into the turbo-charged superhero Max Steel.'
-         [Action, Adventure, Science Fiction]]<movie>
-         <movie id=2>['Chain Reaction'
-         'At the University of Chicago, a research team that includes brilliant student machinist Eddie Kasalivich experiences a breakthrough: a stable form of fusion that may lead to a waste-free energy source. However, a private company wants to exploit the technology, so Kasalivich and physicist Dr. Lily Sinclair are framed for murder, and the fusion device is stolen. On the run from the FBI, they must recover the technology and exonerate themselves.'
-         [Thriller, Action, Science Fiction]]<movie>
-        <movie id=3>['Grande, grosso e... Verdone' 'A comic movie divided in three episodes.'
-         [Comedy]]<movie>
-        <movie id=4>['Equals'
-         'A futuristic love story set in a world where emotions have been eradicated.'
-         [Drama, Romance, Science Fiction]]<movie>
-        <movie id=5>['The Man with the Golden Gun'
-         Cool government operative James Bond searches for a stolen invention that can turn the sun's heat into a destructive weapon. He soon crosses paths with the menacing Francisco Scaramanga, a hitman so skilled he has a seven-figure working fee. Bond then joins forces with the swimsuit-clad Mary Goodnight, and together they track Scaramanga to a Thai tropical isle hideout where the killer-for-hire lures the slick spy into a deadly maze for a final duel.'
-         [Adventure, Action, Thriller]]<movie>
+        <movie id=1 title='Max Steel'>
+         <plot>The adventures of teenager Max McGrath and alien companion Steel, who must harness and combine their tremendous new powers to evolve into the turbo-charged superhero Max Steel.</plot>
+         <genres>[Action, Adventure, Science Fiction]</genres></movie>
+         <movie id=2 title='Chain Reaction'>
+         <plot>At the University of Chicago, a research team that includes brilliant student machinist Eddie Kasalivich experiences a breakthrough: a stable form of fusion that may lead to a waste-free energy source. However, a private company wants to exploit the technology, so Kasalivich and physicist Dr. Lily Sinclair are framed for murder, and the fusion device is stolen. On the run from the FBI, they must recover the technology and exonerate themselves.</plot>
+         <genres>[Thriller, Action, Science Fiction]</genres></movie>
+        <movie id=3 title='Grande, grosso e... Verdone'>
+         <plot>A comic movie divided in three episodes.</plot>
+         <genres>[Comedy]</genres></movie>
+        <movie id=4 title='Equals'>
+         <plot>A futuristic love story set in a world where emotions have been eradicated.</plot>
+         <genres>[Drama, Romance, Science Fiction]</genres></movie>
+        <movie id=5 title='The Man with the Golden Gun'>
+         <plot>Cool government operative James Bond searches for a stolen invention that can turn the sun's heat into a destructive weapon. He soon crosses paths with the menacing Francisco Scaramanga, a hitman so skilled he has a seven-figure working fee. Bond then joins forces with the swimsuit-clad Mary Goodnight, and together they track Scaramanga to a Thai tropical isle hideout where the killer-for-hire lures the slick spy into a deadly maze for a final duel.</plot>
+         <genres>[Adventure, Action, Thriller]</genres></movie>
         """
     )
 }
@@ -429,7 +480,7 @@ response = ollama.chat(
     movie_plot_context -> <movie>1. ['Chain Reaction'
         'At the University of Chicago, a research team that includes brilliant student machinist Eddie Kasalivich experiences a breakthrough: a stable form of fusion that may lead to a waste-free energy source. However, a private company wants to exploit the technology, so Kasalivich and physicist Dr. Lily Sinclair are framed for murder, and the fusion device is stolen. On the run from the FBI, they must recover the technology and exonerate themselves.'
         "['Thriller', 'Action', 'Science Fiction']"]<movie>
-    <movie>2. ['Grande, grosso e... Verdone' 'A comic movie divided in three episodes.'
+    <movie>2. ['Grande, grosso e... Verdone','A comic movie divided in three episodes.'
         "['Comedy']"]<movie>
         ... <take more example randomly from dataset>
     Correct Answer -> ...
