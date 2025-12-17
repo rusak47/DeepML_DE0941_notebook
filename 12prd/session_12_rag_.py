@@ -5,6 +5,8 @@
 from pyexpat.errors import messages
 
 import ast # python parsing module: parse string to object in safely manner
+import json # parse response to json object
+
 from FlagEmbedding import BGEM3FlagModel
 import pandas as pd
 import os
@@ -175,7 +177,7 @@ closest_user_negative_idxs = get_closest_matches(user_input_movie_info_negative,
 print(f"Negative res: {len(closest_user_negative_idxs)}")
 print("===" * 10)
 mask_negative = np.ones(len(embs_dense_overviews), dtype=bool)
-mask_negative[closest_user_negative_idxs] = False
+mask_negative[closest_user_negative_idxs] = False # disable negative matches
 
 embs_dense_overviews_masked = embs_dense_overviews[mask_negative]
 
@@ -225,8 +227,20 @@ response = ollama.chat(
 
 print(f"identified genres: {response.message.content}")
 print("<<<<<<"*10)
+response = json.loads(response.message.content)
+primary_genre = response['best_fitting_primary_genre']
+if not primary_genre:
+    raise 'Couldn\'t identify the main genre for query, please, refine your preferences.'
 
 # filter dataset to get only identified genres
+# strategy: keep only if primary genre is in list
+#          TODO drop if list contains negative genre
+#df_movies_masked_negative = df_movies[mask_negative]
+mask_genres = np.zeros(len(df_movies), dtype=bool)
+mask_genres[[primary_genre in genres for genres in df_movies['genres']]] = True # enable only matched
+
+embs_dense_overviews_masked = embs_dense_overviews[(mask_negative)&(mask_genres)]
+df_movies = df_movies[(mask_negative)&(mask_genres)]
 
 """ TODO does used embeder do that?
 Before generating embeddings, I applied several preprocessing techniques to clean and normalize the text. These included:
@@ -363,7 +377,16 @@ MSG_1SHOT_USER = {
 }
 MSG_1SHOT_ASSIST = {
     'role': 'assistant',
-    'content': '{ "best_fitting_movie" : "2"}'
+    'content': (
+        '{ "chain_of_thought":"Description: dark drama, crime, uncertain outcome.\n'
+        'Movie 1: Drama & Crime; plot linear, outcome not very uncertain → medium match.\n'
+        'Movie 2: Drama & Crime & Thriller; Joker causes chaos, high uncertainty → high match.\n'
+        'Movie 3: Drama & Crime; fantasy elements reduce dark crime tone → medium-low match.\n'
+        'Movie 4: Adventure/Fantasy; no drama/crime → low match.\n'
+        'Movie 5: Mystery/Thriller; suspense present but lacks crime → medium match.\n'
+        'Decision: Movie 2 best fits all criteria.", '
+         '"best_fitting_movie" : "2"}'
+    )
 }
 # NB if query matches example, then response may be biased to the value in example
 MSG_2SHOT_USER = {
@@ -392,7 +415,17 @@ MSG_2SHOT_USER = {
 }
 MSG_2SHOT_ASSIST = {
     'role': 'assistant',
-    'content': '{ "best_fitting_movie" : "1"}'
+    'content': (
+        '{ "chain_of_thought": "'
+        'Description: sci-fi movie, “something cool.\n'
+        'Movie 1 — Max Steel: Sci-Fi, Action, Adventure; teen superhero with alien powers → fits sci-fi & cool theme → high match.\n'
+       ' Movie 2 — Chain Reaction: Sci-Fi, Thriller, Action; fusion technology plot → sci-fi present but less “fun/cool” → medium match.\n'
+        'Movie 3 — Grande, grosso e... Verdone: Comedy only, no sci-fi → low match.\n'
+        'Movie 4 — Equals: Sci-Fi, Drama, Romance; futuristic setting → sci-fi present but tone not “cool” → medium-low match.\n'
+        'Movie 5 — The Man with the Golden Gun: Action/Adventure/Thriller; no sci-fi → low match.\n'
+        'Decision: Movie 1 best fits sci-fi + cool criteria.'
+        '","best_fitting_movie" : "1"}'
+    )
 }
 response = ollama.chat(
     model='gemma3:1b',
@@ -490,10 +523,10 @@ for each in response.logprobs:
     token = each.get('token', '')
     logprob = each.get('logprob', None)
     alternatives_logprobs = each.get('top_logprobs', [])
-    print(f'>> selected: {token}')
-    print('alt: > ', end='')
-    print([it['token'] for it in alternatives_logprobs])
-    print('<<<<' * 40)
+    #print(f'>> selected: {token}')
+    #print('alt: > ', end='')
+    #print([it['token'] for it in alternatives_logprobs])
+    #print('<<<<' * 40)
 
 print(response.message.content)
 
@@ -506,26 +539,91 @@ chosen_movie_idx = int(response_obj.best_fitting_movie)
 chosen_movie_idx_global = closest_user_preferences_idxs[chosen_movie_idx - 1]
 plot_overview = df_movies.iloc[chosen_movie_idx_global]['overview']
 movie_title = df_movies.iloc[chosen_movie_idx_global]['original_title']
+print(f"Selected({chosen_movie_idx_global}): {df_movies.iloc[chosen_movie_idx_global]}")
 
-response = ollama.chat(
-    model='gemma:2b',
-    messages=[
-        {
-            'role': 'system',
-            'content': f"you are the best movie critic ever existed."
-        },
-        {
-            'role': 'user',
-            'content': f"write short recommendation of movie based on preferences. \n"
-                       + 'output 3-5 sentences, include movie title.\n'
-                       #TODO format unstable - use model
+USER_QUERY_CRITIC = {
+    'role':'user',
+    'content': "Write a short movie recommendation operating ONLY with the given information below.\n\n"
+                "Rules:\n"
+                "- Use ONLY the provided movie overview.\n"
+                #"- Do NOT add facts, plot points, or interpretations not stated.\n"
+                "- Do NOT include or mention any XML-like tags in your response.\n"
+                "- The movie title MUST be copied exactly as provided, without changes.\n"
+                "- Do NOT rename, translate, or paraphrase the movie title.\n"
+                "- Output EXACTLY 3–5 sentences in free-form text.\n"
+                "- Format the output using Markdown.\n\n"
+
+                "INPUT DATA (do not repeat labels):\n"
+                f'<description> {user_input_movie_plot_preference} </description>\n'
+                f'<movie_title> {movie_title} </movie_title>\n'
+                f'<movie_overview> {plot_overview} </movie_overview>\n'
+}
+USER_QUERY_CRITIC2 = {
+    'role':'user',
+    'content': "You are a professional movie critic.\n"
+                "Professional means:\n"
+                "- Maintain a balanced, near-positive tone that is measured and restrained.\n"
+                "- Avoid exaggerated praise, hype, or promotional language.\n"
+                "- Do not oversell the movie or guarantee enjoyment.\n"
+                "- Focus on how the movie aligns with the user’s stated preferences.\n"
+                #"- Base all statements strictly on the provided movie overview and user preference.\n"
+                
+                "Style guardrails:\n"
+                "- Avoid clichés (e.g. “must-watch”, “edge of your seat”, “a rollercoaster of emotions”).\n"
+                "- Avoid superlatives (e.g. “best”, “greatest”, “perfect”).\n"
+                "- Avoid second-person persuasion (do not address the reader directly).\n"
+                "- Avoid marketing or fan-style language.\n"
+                "- Avoid plot repetition; summarize selectively and briefly.\n"
+                #"- Avoid emojis, slang, jokes, or informal tone.\n"
+                
+                "Constraints:\n"
+                #"- Do not introduce facts, themes, or interpretations not present in the input.\n"
+                "- Do not include or reference any input tags or labels in the output.\n"
+                "- You may rewrite the movie title only as a critic-style review headline.\n"
+                "- The headline should be interpretive, concise, and reflect the movie’s themes or tone.\n"
+    
+                "Structure the output as:\n"
+                "- A Markdown heading serving as a critic review title\n"
+                "- Followed by a 3–5 sentence review body\n"
+
+               "INPUT DATA (do not repeat labels):\n"
+               f'<user_preferences> {user_input_movie_plot_preference} </user_preferences>\n'
+               f'<movie_title> {movie_title} </movie_title>\n'
+               f'<movie_overview> {plot_overview} </movie_overview>\n'
+}
+
+USER_QUERY_CRITIC_UNSTABLE = {
+            'role': 'user', #TODO it hallucinates
+            'content': f"write short recommendation about the movie given below. \n"
+                       + 'output 3-5 sentences writen in free form, include unchanged movie title only.\n'
+                         'Format your output using markdown.\n'
+                       #TODO format unstable - use model for guaranteed output
                        + f'<description> {user_input_movie_plot_preference} </description>\n'
                        + f'<movie_title> {movie_title} </movie_title>\n'
                        + f'<movie_overview> {plot_overview} </movie_overview>\n'
         }
+
+SYS_QUERY_CRITIC = {
+            'role': 'system',
+            #'content': f"you are the best movie critic ever existed."
+            'content': "You are a professional movie critic. "
+                        "You strictly follow user instructions and do not add information"
+                        " that alters the original movie plot"
+                        #"that is not explicitly provided."
+        }
+response = ollama.chat(
+    model='gemma:2b',
+    messages=[
+        SYS_QUERY_CRITIC,
+        USER_QUERY_CRITIC2
     ]
     # ,format=Response.model_json_schema()
 )
 
+print("---"*10)
+print(f"User query: {user_input_movie_plot_preference}")
+print(f"User ~query: {user_input_movie_info_negative}")
+print(f"Selected movie: {movie_title}")
+print(f"\t {plot_overview}")
 print(' Critic response: ')
 print(response.message.content)
