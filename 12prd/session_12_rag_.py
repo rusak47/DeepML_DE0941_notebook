@@ -18,6 +18,7 @@ from typing import Literal, Optional, List
 import ollama
 from torch.hub import download_url_to_file
 
+_RERANKER_ = True
 model_embeddings = BGEM3FlagModel(
     'BAAI/bge-m3',  # multilingual model from HF
     use_fp16=True,  # shorter embeddings
@@ -145,7 +146,7 @@ Alternative task: Use Kaggle Recipes Dataset : 64k Dishes to create recepie reco
     ↓
     Candidate retrieval (top-K)
     ↓
-    Re-ranker (Qwen3-Reranker-8B)
+    Re-ranker (Qwen3-Reranker-8B) #TODO test with 3080..
     ↓
     Best movie
     
@@ -181,6 +182,10 @@ mask_negative[closest_user_negative_idxs] = False # disable negative matches
 
 embs_dense_overviews_masked = embs_dense_overviews[mask_negative]
 
+"""
+    User input (preferences)
+     - extract genre -> filter relevant movies
+"""
 # movie_desc=input("Describe the movie you wish to watch")
 user_input_movie_plot_preference = "sci-fi movie about smth cool"
 #user_input_movie_plot_preference = "sci-fi movie about "
@@ -268,6 +273,9 @@ for i, plot in enumerate(movie_plots):
 
 print(f">>> Movie plot context: {movie_plot_context}")
 print("<<<" * 10)
+
+if _RERANKER_:
+    print("rerank each doc separately and choose top-1")
 
 """
  2. Augmentation
@@ -427,29 +435,40 @@ MSG_2SHOT_ASSIST = {
         '","best_fitting_movie" : "1"}'
     )
 }
-response = ollama.chat(
-    model='gemma3:1b',
-    messages=[
-        MSG_SYS,
+if not _RERANKER_:
+    response = ollama.chat(
+        model='gemma3:1b',
+        messages=[
+            MSG_SYS,
 
-        MSG_1SHOT_USER,
-        MSG_1SHOT_ASSIST,
+            MSG_1SHOT_USER,
+            MSG_1SHOT_ASSIST,
 
-        MSG_2SHOT_USER,
-        MSG_2SHOT_ASSIST,
+            MSG_2SHOT_USER,
+            MSG_2SHOT_ASSIST,
 
-        {
-            'role': 'user',
-            'content': USER_QUERY_INTRO
-                       + f'<description> {user_input_movie_plot_preference} </description>\n'
-                       + movie_plot_context
-        },
-    ]
-    , options={'temperature': 0}
-    , format=Response.model_json_schema() # Syntax + structure enforcement
-    , logprobs=True
-    , top_logprobs=5
-)
+            {
+                'role': 'user',
+                'content': USER_QUERY_INTRO
+                           + f'<description> {user_input_movie_plot_preference} </description>\n'
+                           + movie_plot_context
+            },
+        ]
+        , options={'temperature': 0}
+        , format=Response.model_json_schema() # Syntax + structure enforcement
+        , logprobs=True
+        , top_logprobs=5
+    )
+    for each in response.logprobs:
+        token = each.get('token', '')
+        logprob = each.get('logprob', None)
+        alternatives_logprobs = each.get('top_logprobs', [])
+        # print(f'>> selected: {token}')
+        # print('alt: > ', end='')
+        # print([it['token'] for it in alternatives_logprobs])
+        # print('<<<<' * 40)
+
+print(response.message.content)
 """
   #Multi shot prompting
    - We presented a 175 billion parameter language model which shows strong performance on many NLP tasks and
@@ -519,16 +538,6 @@ response = ollama.chat(
     Correct Answer -> ...
 """
 
-for each in response.logprobs:
-    token = each.get('token', '')
-    logprob = each.get('logprob', None)
-    alternatives_logprobs = each.get('top_logprobs', [])
-    #print(f'>> selected: {token}')
-    #print('alt: > ', end='')
-    #print([it['token'] for it in alternatives_logprobs])
-    #print('<<<<' * 40)
-
-print(response.message.content)
 
 """
     3. Generation
