@@ -593,11 +593,11 @@ USER_QUERY_CRITIC2 = {
 }
 
 USER_QUERY_CRITIC_UNSTABLE = {
-            'role': 'user', #TODO it hallucinates
+            'role': 'user', # NB it hallucinates
             'content': f"write short recommendation about the movie given below. \n"
                        + 'output 3-5 sentences writen in free form, include unchanged movie title only.\n'
                          'Format your output using markdown.\n'
-                       #TODO format unstable - use model for guaranteed output
+                       # NB format is unstable - use model for guaranteed output
                        + f'<description> {user_input_movie_plot_preference} </description>\n'
                        + f'<movie_title> {movie_title} </movie_title>\n'
                        + f'<movie_overview> {plot_overview} </movie_overview>\n'
