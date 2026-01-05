@@ -16,6 +16,8 @@ import torch.distributed
 import torch.multiprocessing as mp
 
 import matplotlib.pyplot as plt
+
+
 plt.rcParams["figure.figsize"] = (15, 7)
 plt.style.use('dark_background')
 
@@ -87,11 +89,33 @@ class ModelD(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #TODO
+        #(B, 1, 28, 28) -> (B, 1) True or False
+        self.encoder = torch.nn.Sequential(# recommended sequence
+            torch.nn.Conv2d(in_channels=1, out_channels=8,kernel_size=7, stride=1, padding=1), # dont change the size (local linear layer
+            torch.nn.InstanceNorm2d(num_features=8), # normalize just 1 image - most simplest norm
+            torch.nn.GELU(), # (non linearity)
+            torch.nn.AdaptiveMaxPool2d(output_size=(14,14)),
+
+            torch.nn.Conv2d(in_channels=8, out_channels=16,kernel_size=5, stride=1, padding=1),            # dont change the size (local linear layer
+            torch.nn.InstanceNorm2d(num_features=16),  # normalize just 1 image - most simplest norm
+            torch.nn.GELU(),  # (non linearity)
+            torch.nn.AdaptiveMaxPool2d(output_size=(7, 7)),
+
+            torch.nn.Conv2d(in_channels=16, out_channels=32,kernel_size=3, stride=1, padding=1),            # dont change the size (local linear layer
+            torch.nn.InstanceNorm2d(num_features=32),  # normalize just 1 image - most simplest norm
+            torch.nn.GELU(),  # (non linearity)
+            torch.nn.AdaptiveMaxPool2d(output_size=(1,1)), # automatically calculates
+        #)
+            torch.nn.Flatten(),
+        # cant add directly to encoder because -> dimension mismatch - There should be Flatten layer to remove redundant dimension
+        #self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(in_features=32, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        # softmax if there are multiple outputs
 
     def forward(self, x):
-        # TODO (B, 1)
-        y_prim = torch.rand(size=(x.size(0), 1))
+        y_prim = self.encoder.forward(x)
         return y_prim
 
 
@@ -99,19 +123,40 @@ class ModelG(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        #TODO
+        self.proj = torch.nn.Linear(Z_SIZE, 16*(INPUT_SIZE//4)**2) # (B, 16, 8, 8) square for width and height
+        self.decoder = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=16, out_channels=8, kernel_size=3, stride=1, padding=1),
+            torch.nn.InstanceNorm2d(num_features=8),
+            torch.nn.GELU(),
+            torch.nn.UpsamplingBilinear2d(scale_factor=2) ,# (B, 8, 16, 16) #maybeused AdaptiveMaxPool2d
+
+            torch.nn.Conv2d(in_channels=8, out_channels=4, kernel_size=3, stride=1, padding=1),
+            torch.nn.InstanceNorm2d(num_features=4),
+            torch.nn.GELU(),
+
+            torch.nn.Conv2d(in_channels=4, out_channels=4, kernel_size=3, stride=1, padding=1),
+            torch.nn.InstanceNorm2d(num_features=4),
+            torch.nn.GELU(),
+            torch.nn.UpsamplingBilinear2d(size=(28,28)),  # (B, 8, 16, 16) #maybeused AdaptiveMaxPool2d
+
+            torch.nn.Conv2d(in_channels=4, out_channels=1, kernel_size=3, stride=1, padding=1),
+            torch.nn.Sigmoid()
+        )
 
     def forward(self, z):
-        #TODO (B, 1, 28, 28)
-        y_prim = torch.rand(size=(z.size(0), 1, INPUT_SIZE, INPUT_SIZE))
+        # (B, 1, 28, 28)
+        out = self.proj.forward(z)
+        out = out.view(-1, 16,7,7)
+        y_prim = self.decoder.forward(out)
         return y_prim
 
 
 dataset_full = DatasetEMNIST()
 
-np.random.seed(2)
+#np.random.seed(2)
+random.seed(2)
 labels_train = copy(dataset_full.labels)
-random.shuffle(labels_train, random=np.random.random)
+random.shuffle(labels_train)
 labels_train = labels_train[:MAX_CLASSES]
 np.random.seed(int(time.time()))
 
@@ -156,14 +201,17 @@ data_loader_train = torch.utils.data.DataLoader(
 model_D = ModelD().to(DEVICE)
 model_G = ModelG().to(DEVICE)
 
-optimizer = torch.optim.Adam(list(model_D.parameters()) + list(model_G.parameters()), lr=LEARNING_RATE)
+optimizer_D = torch.optim.RAdam(model_D.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
+optimizer_G = torch.optim.RAdam(model_G.parameters(), lr=LEARNING_RATE, betas=(0.5, 0.999))
+#optimizer = torch.optim.Adam(list(model_D.parameters()) + list(model_G.parameters()), lr=LEARNING_RATE)
 
 metrics = {}
 for stage in ['train']:
     for metric in ['loss', 'loss_g', 'loss_d']:
         metrics[f'{stage}_{metric}'] = []
 
-# TODO distribution
+distribution = torch.distributions.Normal(loc=0., scale=1.0) # mean - loc,
+
 
 for epoch in range(1, EPOCHS+1):
     metrics_epoch = {key: [] for key in metrics.keys()}
@@ -174,16 +222,50 @@ for epoch in range(1, EPOCHS+1):
 
         loss_D = torch.FloatTensor([0])
         loss_G = torch.FloatTensor([0])
-        x_fake = x.clone()
 
-        #TODO loss
+        y_real = model_D.forward(x) # training descriminator
+        z = distribution.sample(sample_shape=(x.size(0), Z_SIZE)).to(DEVICE)
+
+        x_fake = model_G.forward(z)
+        model_G.eval()
+        model_G.requires_grad_(False) # disable training at this moment
+        x_fake =  model_G.forward(z)
+        y_fake = model_D.forward(x_fake.detach())
+
+        loss_D = -torch.mean(torch.log(y_real + 1e-8) + torch.log(1. - y_fake + 1e-8))
+        loss_D.backward()
+
+        optimizer_D.step()
+        optimizer_D.zero_grad()
+
+        model_G.train()
+        model_G.requires_grad_(True)
+
+        # training generator
+        z = distribution.sample(sample_shape=(x.size(0), Z_SIZE)).to(DEVICE)
+        x_fake = model_G.forward(z)
+
+        model_D.eval()
+        model_D.requires_grad_(False)
+        y_fake = model_D.forward(x_fake)
+
+        loss_G = - torch.mean(torch.log(y_fake+1e-8))
+        loss_G.backward()
+
+        optimizer_G.step()
+        optimizer_G.zero_grad()
+
+        model_D.train()
+        model_D.requires_grad_(True)
+
         loss = loss_D + loss_G
+        #loss.backward()
 
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        # we can use one optimizer, but 2 is better
+        #optimizer.step()
+        #optimizer.zero_grad()
 
-        metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
+        #metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
         metrics_epoch[f'{stage}_loss_g'].append(loss_G.cpu().item())
         metrics_epoch[f'{stage}_loss_d'].append(loss_D.cpu().item())
 
