@@ -109,8 +109,8 @@ class ModelD(torch.nn.Module):
             torch.nn.Flatten(),
         # cant add directly to encoder because -> dimension mismatch - There should be Flatten layer to remove redundant dimension
         #self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(in_features=32, out_features=1),
-            torch.nn.Sigmoid()
+            torch.nn.Linear(in_features=32, out_features=1), # score how good image is
+           # torch.nn.Sigmoid()
         )
         # softmax if there are multiple outputs
 
@@ -232,9 +232,10 @@ for epoch in range(1, EPOCHS+1):
         x_fake =  model_G.forward(z)
         y_fake = model_D.forward(x_fake.detach())
 
-        loss_D = -torch.mean(torch.log(y_real + 1e-8) + torch.log(1. - y_fake + 1e-8))
+        loss_D = -torch.mean(y_real - y_fake)
         loss_D.backward()
 
+        torch.nn.utils.clip_grad_norm_(model_D.parameters(), max_norm=1e-2, norm_type=1)
         optimizer_D.step()
         optimizer_D.zero_grad()
 
@@ -249,9 +250,10 @@ for epoch in range(1, EPOCHS+1):
         model_D.requires_grad_(False)
         y_fake = model_D.forward(x_fake)
 
-        loss_G = - torch.mean(torch.log(y_fake+1e-8))
+        loss_G = -torch.mean(y_fake) # minus means - make it larger
         loss_G.backward()
 
+        torch.nn.utils.clip_grad_norm_(model_G.parameters(), max_norm=1e-2, norm_type=1)
         optimizer_G.step()
         optimizer_G.zero_grad()
 
